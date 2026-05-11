@@ -31,8 +31,8 @@
             //.path = "../dvui-dev",
         },
         .assetpack = .{
-            .url = "https://github.com/foxnne/assetpack/archive/0230aa72d7c4930e7275f5bbbe02dc6a12d7154d.tar.gz",
-            .hash = "assetpack-0.1.0-5DA2d2xjAAB5iotA8oy2GOkcsUGZlhGUBh0CRTgI6Qs5",
+            .url = "https://github.com/foxnne/assetpack/archive/39a097a85a5c6949a574c50352fdafc3994de364.tar.gz",
+            .hash = "assetpack-0.2.0-5DA2d2xjAAB5iotA8oy2GOkcsUGZlhGUBh0CRTgI6Qs5",
         },
         .known_folders = .{
             .url = "https://github.com/ziglibs/known-folders/archive/d6d03830968cca6b7b9f24fd97ee348346a6905d.tar.gz",
