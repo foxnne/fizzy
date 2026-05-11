@@ -389,13 +389,19 @@ pub fn build(b: *std.Build) !void {
     } else {
         const packageall_optimize_arg = b.fmt("-Doptimize={s}", .{@tagName(optimize)});
 
+        // Build order is deliberately fail-fast: Windows first (most likely to
+        // fail on a fresh CI runner because of MSVC SDK setup, libc.ini paths,
+        // and cross-compile ABI surprises), then Linux (mksquashfs / AppImage
+        // packaging quirks), then macOS last (native, lowest risk). When a
+        // release run is going to break, this ordering surfaces the failure
+        // 5-10 minutes sooner than the alphabetical order did.
         const packageall_triples = [_][]const u8{
+            "x86_64-windows-msvc",
+            "aarch64-windows-msvc",
             "x86_64-linux-gnu",
             "aarch64-linux-gnu",
             "x86_64-macos",
             "aarch64-macos",
-            "x86_64-windows-msvc",
-            "aarch64-windows-msvc",
         };
 
         var prev_step: ?*std.Build.Step = null;

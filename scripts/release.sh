@@ -107,11 +107,30 @@ fi
 # ----- build all 6 targets -------------------------------------------------
 
 if [[ "${PIXI_RELEASE_SKIP_BUILD:-0}" != "1" ]]; then
-    echo "==> Building all targets (zig build packageall -Doptimize=ReleaseFast -Dfetch-msvc)"
-    # -Dfetch-msvc: lets the cross-compile to *-windows-msvc auto-pull MSVC SDK
-    # if .velopack-msvc/ isn't populated yet. Safe to leave on always; no-op if
-    # the cache is already there.
-    zig build packageall -Doptimize=ReleaseFast -Dfetch-msvc
+    # MSVC SDK setup is run as its OWN step, not just via -Dfetch-msvc on
+    # packageall. The reason: build.zig wires msvcup_before_compile as a
+    # dependency of the root compile artifacts only (exe, tests). Transitive
+    # compiles (SDL3, freetype, …) don't inherit that dependency, so Zig's
+    # scheduler can — and on CI does — fire them in parallel with msvcup.
+    # SDL3 then tries to read .velopack-msvc/zig-libc-x64.ini before msvcup
+    # has written it and fails with FileNotFound.
+    #
+    # Running msvcup-setup serially before packageall side-steps the race:
+    # the .ini files exist at graph-build time, resolveWindowsMsvcLibc
+    # returns a valid path immediately, needs_setup stays false, msvcup
+    # isn't even added to the graph for the per-target child builds, and
+    # there's no parallel window for transitive compiles to lose.
+    #
+    # No-op locally if .velopack-msvc/ is already populated.
+    if [[ ! -f .velopack-msvc/zig-libc-x64.ini || ! -f .velopack-msvc/zig-libc-arm64.ini ]]; then
+        echo "==> Setting up MSVC SDK for cross-compile to Windows (zig build msvcup-setup)"
+        zig build msvcup-setup
+    else
+        echo "==> .velopack-msvc/ already populated, skipping msvcup-setup"
+    fi
+
+    echo "==> Building all targets (zig build packageall -Doptimize=ReleaseFast)"
+    zig build packageall -Doptimize=ReleaseFast
 else
     echo "==> PIXI_RELEASE_SKIP_BUILD=1, reusing existing zig-out/"
 fi
