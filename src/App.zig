@@ -53,24 +53,10 @@ pub fn main(main_init: std.process.Init) !u8 {
     std.log.info("Pixi version {s}", .{build_opts.app_version});
 
     if (comptime auto_update.impl) {
+        // appRunHook handles Velopack's install/uninstall/firstrun CLI flags and
+        // does not touch the network. Update checks are user-initiated from the
+        // About dialog — startup must not block on connectivity.
         auto_update.appRunHook();
-
-        // Two update paths:
-        //   - PIXI_AUTOUPDATE_URL (env var): plain HTTP feed URL or local directory.
-        //     Used for local end-to-end testing against a `vpk pack` output dir
-        //     without round-tripping through GitHub.
-        //   - Default: GitHub Releases on the repo baked in at build time
-        //     (`-Drepo-url`, defaults to https://github.com/foxnne/pixi). The C
-        //     API picks the asset for the channel that was set at pack time
-        //     (`<arch>-<os>`, matching zig-out / `vpk pack --channel`).
-        if (std.c.getenv("PIXI_AUTOUPDATE_URL")) |raw| {
-            const update_url = std.mem.span(raw);
-            if (update_url.len > 0) {
-                try auto_update.checkAndMaybeApplyAtStartup(main_init.io, std.heap.page_allocator);
-            }
-        } else if (build_opts.app_repo_url.len > 0) {
-            try auto_update.checkAndMaybeApplyAtStartup(main_init.io, std.heap.page_allocator);
-        }
     }
 
     if (@hasDecl(dvui.backend, "main")) {
