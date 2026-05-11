@@ -73,73 +73,125 @@ jobs:
           fetch-tags: true
           fetch-depth: 0
 
-      - name: Pre-create Zig global cache tmp/
-        shell: bash
-        run: mkdir -p "$GITHUB_WORKSPACE/zig-global-cache/tmp"
-
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
           cache-key: ${{ hashFiles('build.zig.zon') }}
 
+      # mlugg/setup-zig overrides ZIG_GLOBAL_CACHE_DIR / ZIG_LOCAL_CACHE_DIR
+      # to `.zig-cache` for its caching layer, so the tmp/ pre-create has to
+      # happen AFTER that step (otherwise we create tmp/ under a path Zig
+      # never touches and the fetch still fails with FileNotFound).
+      #
+      # The bug being worked around: Zig 0.16's Fetch.zig#unzip calls
+      # createFile() on <cache>/tmp/<hex>.zip without ensuring tmp/ exists.
+      # The first zip-archive dependency (velopack libc here) trips it on
+      # fresh CI runners. Pre-creating tmp/ is the standard workaround.
+      - name: Pre-create Zig cache tmp/
+        shell: bash
+        run: |
+          mkdir -p "$ZIG_GLOBAL_CACHE_DIR/tmp"
+          [[ "$ZIG_LOCAL_CACHE_DIR" != "$ZIG_GLOBAL_CACHE_DIR" ]] && mkdir -p "$ZIG_LOCAL_CACHE_DIR/tmp" || true
+
       - name: Setup .NET (for Velopack vpk)
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0"
 
+      # Pre-fetch dependencies separately from the release build so transient
+      # GitHub fetch flakes (HttpConnectionClosing) don't tank an otherwise
+      # working release. Zig 0.16 doesn't retry these internally.
+      # We fetch for both the native macOS target AND windows-msvc so the
+      # `packageall` step (which forks per-target `zig build package` runs)
+      # doesn't re-hit the network from a cold global cache.
+      - name: Fetch deps with retries
+        shell: bash
+        run: |
+          fetch() {
+            local args="$1"
+            local n=0
+            until [ "$n" -ge 5 ]; do
+              zig build --fetch $args && return 0
+              n=$((n+1))
+              echo "Fetch attempt $n ($args) failed, sleeping $((n*10))s..."
+              sleep $((n*10))
+            done
+            return 1
+          }
+          fetch "" && fetch "-Dtarget=x86_64-windows-msvc"
+
       # ----- macOS signing setup (optional) ------------------------------
       # If the cert secrets are configured, import them into a temporary
-      # keychain that lives only for this job. If not, skip — the script
+      # keychain that lives only for this job. If not, skip — release.sh
       # detects unset PIXI_MACOS_SIGN_APP and produces unsigned builds.
+      #
+      # Why the indirection via `signing_config` outputs instead of just
+      # `if: ${{ secrets.X != '' }}`: workflow validation fails with
+      # "Unrecognized named-value: 'secrets'" when secrets appear in an
+      # `if:` condition on a job that has `environment:` set. Reading
+      # secrets via a step's `env:` block IS allowed, so we read them
+      # there and emit booleans on $GITHUB_OUTPUT for later steps to gate
+      # on. This step also doubles as a diagnostic line: the next CI
+      # run's first signing-related output tells you immediately whether
+      # the secrets were detected.
+      #
+      # Why apple-actions/import-codesign-certs instead of rolling our
+      # own `security import` flow: the manual path has multiple
+      # footguns. `security import ... -t cert -f pkcs12` silently drops
+      # the private key from the .p12 (then `set-key-partition-list`
+      # fails with `SecItemCopyMatching: item could not be found`).
+      # Partition list and search list ordering also have to be exact
+      # or codesign / productsign can't find the identity later.
+
+      - name: Check signing config
+        id: signing_config
+        env:
+          HAS_CERT: ${{ secrets.PIXI_MACOS_CERT_P12_BASE64 != '' }}
+          HAS_NOTARY: ${{ secrets.PIXI_APPLE_ID != '' }}
+        run: |
+          echo "cert=$HAS_CERT" >> "$GITHUB_OUTPUT"
+          echo "notary=$HAS_NOTARY" >> "$GITHUB_OUTPUT"
+          if [[ "$HAS_CERT" == "true" ]]; then
+            echo "macOS signing: ENABLED"
+          else
+            echo "macOS signing: disabled (PIXI_MACOS_CERT_P12_BASE64 not set)"
+          fi
+          if [[ "$HAS_NOTARY" == "true" ]]; then
+            echo "Notarization:  ENABLED"
+          else
+            echo "Notarization:  disabled (PIXI_APPLE_ID not set)"
+          fi
 
       - name: Import signing certificate
-        if: ${{ secrets.PIXI_MACOS_CERT_P12_BASE64 != '' }}
-        env:
-          CERT_B64: ${{ secrets.PIXI_MACOS_CERT_P12_BASE64 }}
-          CERT_PASS: ${{ secrets.PIXI_MACOS_CERT_PASSWORD }}
-        run: |
-          set -euo pipefail
-          KEYCHAIN_PASS="$(openssl rand -base64 24)"
-          KEYCHAIN_PATH="$RUNNER_TEMP/pixi-release.keychain-db"
-          CERT_PATH="$RUNNER_TEMP/pixi-release.p12"
-
-          echo "$CERT_B64" | base64 --decode > "$CERT_PATH"
-
-          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
-
-          security import "$CERT_PATH" \
-            -P "$CERT_PASS" \
-            -A -t cert -f pkcs12 \
-            -k "$KEYCHAIN_PATH"
-
-          # Make codesign able to use the imported cert without a UI prompt.
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASS" \
-            "$KEYCHAIN_PATH" >/dev/null
-
-          # Put our keychain ahead of the default in the search list so
-          # `codesign` / `xcrun productsign` find the cert.
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-
-          rm -f "$CERT_PATH"
+        if: steps.signing_config.outputs.cert == 'true'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.PIXI_MACOS_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.PIXI_MACOS_CERT_PASSWORD }}
+          # One-shot keychain unique to this job; torn down at job end.
+          keychain: pixi-release
+          create-keychain: true
 
       - name: Configure notarytool credentials
-        if: ${{ secrets.PIXI_APPLE_ID != '' }}
+        if: steps.signing_config.outputs.notary == 'true'
         env:
           APPLE_ID: ${{ secrets.PIXI_APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.PIXI_APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.PIXI_APPLE_TEAM_ID }}
         run: |
-          # Store the notarytool credentials under the same profile name we
-          # pass to vpk via PIXI_MACOS_NOTARY_PROFILE in the next step.
+          set -euo pipefail
           xcrun notarytool store-credentials "pixi-ci-notary" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID"
+          # Tell release.sh to pass this profile to vpk for notarization.
+          # Done via $GITHUB_ENV rather than a step env entry on the next
+          # step because the latter would have to be a ternary on a
+          # `secrets.*` expression, which fails validation under
+          # `environment:`. This way the env var only exists when the
+          # profile was actually created, which is what release.sh expects.
+          echo "PIXI_MACOS_NOTARY_PROFILE=pixi-ci-notary" >> "$GITHUB_ENV"
 
       # ----- run the release ---------------------------------------------
 
@@ -147,7 +199,9 @@ jobs:
         env:
           PIXI_MACOS_SIGN_APP: ${{ secrets.PIXI_MACOS_SIGN_APP }}
           PIXI_MACOS_SIGN_INSTALLER: ${{ secrets.PIXI_MACOS_SIGN_INSTALLER }}
-          PIXI_MACOS_NOTARY_PROFILE: ${{ secrets.PIXI_APPLE_ID != '' && 'pixi-ci-notary' || '' }}
+          # PIXI_MACOS_NOTARY_PROFILE is set by the notarytool step via
+          # $GITHUB_ENV when notarization is enabled, otherwise it stays
+          # unset and release.sh skips the --notaryProfile vpk flag.
           # Leave the release as a draft so the operator publishes manually.
           # Set PIXI_RELEASE_PUBLISH=1 here once you trust the pipeline end-to-end.
           PIXI_RELEASE_PUBLISH: "0"
