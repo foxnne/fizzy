@@ -305,6 +305,37 @@ pub fn draw() !dvui.App.Result {
         }
     }
 
+    // Help — matches the macOS native Help menu so the two menubars stay congruent.
+    if (menuItem(@src(), "Help", .{ .submenu = true }, .{
+        .expand = .horizontal,
+        .color_text = dvui.themeGet().color(.control, .text),
+    })) |r| {
+        var animator = dvui.animate(@src(), .{
+            .kind = .alpha,
+            .duration = 250_000,
+        }, .{
+            .expand = .both,
+        });
+        defer animator.deinit();
+
+        var fw = dvui.floatingMenu(@src(), .{ .from = r }, .{});
+        defer fw.deinit();
+
+        if (menuItem(@src(), "About fizzy", .{}, .{ .expand = .horizontal }) != null) {
+            fizzy.Editor.Dialogs.AboutFizzy.request();
+            fw.close();
+        }
+
+        _ = dvui.separator(@src(), .{ .expand = .horizontal });
+
+        if (menuItem(@src(), "Check for Updates…", .{}, .{ .expand = .horizontal }) != null) {
+            // The AboutFizzy dialog hosts the actual update check + install controls,
+            // so we route both menu items to it (matches the macOS Help menu wiring).
+            fizzy.Editor.Dialogs.AboutFizzy.request();
+            fw.close();
+        }
+    }
+
     return .ok;
 }
 

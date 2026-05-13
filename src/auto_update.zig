@@ -31,7 +31,7 @@ fn castManager(m: *anyopaque) *Vpk.vpkc_update_manager_t {
 }
 
 /// Velopack's macOS locator expects the process image under `*.app/Contents/MacOS/*`.
-/// Loose binaries from `zig build` / `zig-out/.../Fizzy` are not supported — skip the C API
+/// Loose binaries from `zig build` / `zig-out/.../fizzy` are not supported — skip the C API
 /// so we don't spam logs or Velopack errors on every frame.
 pub fn installLayoutSupported(io: std.Io) bool {
     if (!impl) return false;
@@ -113,9 +113,10 @@ pub fn checkAndMaybeApplyAtStartup(io: std.Io, allocator: std.mem.Allocator) !vo
                 return error.UpdateDownloadFailed;
             }
 
-            std.log.info("fizzy autoupdate: applying update and exiting", .{});
+            std.log.info("fizzy autoupdate: applying update and restarting", .{});
             const target_asset = u.TargetFullRelease;
-            _ = Vpk.vpkc_wait_exit_then_apply_updates(castManager(mgr), target_asset, true, false, null, 0);
+            // args: manager, asset, silent=true, restart=true (relaunch after apply), restartArgs=null, restartArgsLen=0
+            _ = Vpk.vpkc_wait_exit_then_apply_updates(castManager(mgr), target_asset, true, true, null, 0);
             if (builtin.os.tag == .windows) {
                 const win32 = @import("win32");
                 win32.system.threading.Sleep(2000);
@@ -213,7 +214,8 @@ pub fn checkDownloadApplyAndExit(io: std.Io, allocator: std.mem.Allocator) Updat
                 return error.DownloadFailed;
             }
             const target_asset = u.TargetFullRelease;
-            _ = Vpk.vpkc_wait_exit_then_apply_updates(castManager(mgr), target_asset, true, false, null, 0);
+            // args: manager, asset, silent=true, restart=true (relaunch after apply), restartArgs=null, restartArgsLen=0
+            _ = Vpk.vpkc_wait_exit_then_apply_updates(castManager(mgr), target_asset, true, true, null, 0);
             if (builtin.os.tag == .windows) {
                 const win32 = @import("win32");
                 win32.system.threading.Sleep(2000);

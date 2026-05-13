@@ -17,6 +17,7 @@ const noto_sans_bold_ttf = assets.files.fonts.@"NotoSans-Bold.ttf";
 
 const fizzy = @import("../fizzy.zig");
 const dvui = @import("dvui");
+const update_notify = @import("../update_notify.zig");
 
 const App = fizzy.App;
 const Editor = @This();
@@ -163,10 +164,33 @@ pub fn init(
     const arena = dvui.currentWindow().arena();
     var environ_map = try fizzy.processEnviron().createMap(arena);
     defer environ_map.deinit();
-    const config_folder = std.fs.path.join(fizzy.app.allocator, &.{
-        try known_folders.getPath(dvui.io, arena, environ_map, .local_configuration) orelse app.root_path,
-        "Fizzy",
-    }) catch app.root_path;
+    const config_root = try known_folders.getPath(dvui.io, arena, environ_map, .local_configuration) orelse app.root_path;
+    const config_folder = std.fs.path.join(fizzy.app.allocator, &.{ config_root, "fizzy" }) catch app.root_path;
+
+    // One-time migration: pre-rename builds used `Fizzy/` (capitalized).
+    // On case-insensitive filesystems (Windows NTFS, macOS APFS) `fizzy/` already
+    // resolves to that same directory, so the rename is a no-op and the
+    // failure is ignored. On case-sensitive filesystems (most Linux) the legacy
+    // dir is otherwise orphaned, so we move it across to preserve user settings.
+    {
+        const legacy = std.fs.path.join(arena, &.{ config_root, "Fizzy" }) catch null;
+        if (legacy) |legacy_path| {
+            // Only rename if the new path doesn't already have content.
+            const new_exists = blk: {
+                std.fs.accessAbsolute(config_folder, .{}) catch break :blk false;
+                break :blk true;
+            };
+            const legacy_exists = blk: {
+                std.fs.accessAbsolute(legacy_path, .{}) catch break :blk false;
+                break :blk true;
+            };
+            if (legacy_exists and !new_exists) {
+                std.fs.renameAbsolute(legacy_path, config_folder) catch |err| {
+                    std.log.warn("legacy config folder migration ({s} -> {s}) failed: {s}", .{ legacy_path, config_folder, @errorName(err) });
+                };
+            }
+        }
+    }
     const palette_folder = std.fs.path.join(fizzy.app.allocator, &.{ config_folder, "Palettes" }) catch config_folder;
 
     var editor: Editor = .{
@@ -980,6 +1004,15 @@ pub fn tick(editor: *Editor) !dvui.App.Result {
                 };
             }
         }
+
+        // Arms the launch update toast once the background check reports a newer
+        // version, then renders it in a custom rect anchored just above the infobar.
+        // (We use a non-null subwindow_id on the toast so DVUI's default `toastsShow`
+        // in Window.end skips it — see `update_notify.drawAbove`.)
+        update_notify.tick();
+        if (Infobar.last_top_y) |infobar_y| {
+            update_notify.drawAbove(infobar_y, 8.0);
+        }
     }
 
     // look at demo() for examples of dvui widgets, shows in a floating window
@@ -1104,6 +1137,12 @@ pub fn handleNativeMenuAction(editor: *Editor, action: fizzy.backend.NativeMenuA
         },
         .show_dvui_demo => {
             dvui.Examples.show_demo_window = !dvui.Examples.show_demo_window;
+        },
+        .about, .check_for_updates => {
+            // Mirror the infobar fizzy button: the About dialog displays version, current
+            // update status, and a Check-for-Updates / Install button. Both menu items land
+            // here so the macOS Help → "Check for Updates…" path is congruent with the in-app affordance.
+            Dialogs.AboutFizzy.request();
         },
     }
 }
@@ -2106,7 +2145,7 @@ pub fn save(editor: *Editor) !void {
 }
 
 const save_as_dialog_filters: [3]sdl3.SDL_DialogFileFilter = .{
-    .{ .name = "Fizzy", .pattern = "fiz;pixi" },
+    .{ .name = "fizzy", .pattern = "fiz;pixi" },
     .{ .name = "PNG", .pattern = "png" },
     .{ .name = "JPEG", .pattern = "jpg;jpeg" },
 };

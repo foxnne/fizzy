@@ -219,6 +219,12 @@ pub fn draw() !void {
             fizzy.editor.markSettingsDirty();
         }
 
+        if (dvui.checkbox(@src(), &fizzy.editor.settings.debug_simulate_update_available, "Simulate update available (restart app)", .{
+            .expand = .none,
+        })) {
+            fizzy.editor.markSettingsDirty();
+        }
+
         dvui.label(@src(), "{d:0>3.0} fps", .{dvui.FPS()}, .{});
     }
 }

@@ -166,7 +166,7 @@ There are two paths:
    point a built copy at the local output dir:
 
    ```sh
-   FIZZY_AUTOUPDATE_URL="$PWD/zig-out/x86-64-macos" ./zig-out/x86-64-macos/Fizzy
+   FIZZY_AUTOUPDATE_URL="$PWD/zig-out/x86-64-macos" ./zig-out/x86-64-macos/fizzy
    ```
 
    This bypasses GitHub entirely and reads the `releases.*.json` straight
