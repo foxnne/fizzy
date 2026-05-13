@@ -334,9 +334,44 @@ pub fn draw() !dvui.App.Result {
             fizzy.Editor.Dialogs.AboutFizzy.request();
             fw.close();
         }
+
+        _ = dvui.separator(@src(), .{ .expand = .horizontal });
+
+        if (menuItemWithBugIcon(@src(), "Report Bug…", .{ .expand = .horizontal }) != null) {
+            _ = dvui.openURL(.{ .url = "https://github.com/foxnne/fizzy/issues" });
+            fw.close();
+        }
     }
 
     return .ok;
+}
+
+/// Menu item that renders a bug icon on the left alongside the label. Same
+/// `menuItem` plumbing — we just inject a lucide bug glyph before the label.
+pub fn menuItemWithBugIcon(src: std.builtin.SourceLocation, label_str: []const u8, opts: dvui.Options) ?dvui.Rect.Natural {
+    var mi = dvui.menuItem(src, .{}, opts);
+
+    var ret: ?dvui.Rect.Natural = null;
+    if (mi.activeRect()) |r| ret = r;
+
+    var label_opts = opts;
+    label_opts.margin = dvui.Rect.all(0);
+    label_opts.padding = dvui.Rect.all(0);
+    if (fizzy.dvui.hovered(mi.data())) {
+        label_opts.color_text = dvui.themeGet().color(.window, .text);
+    }
+
+    dvui.icon(@src(), "bug_icon", icons.tvg.lucide.bug, .{
+        .stroke_color = label_opts.color_text orelse dvui.themeGet().color(.control, .text),
+    }, .{
+        .gravity_y = 0.5,
+        .padding = .{ .x = 0, .w = 8 },
+    });
+
+    dvui.labelNoFmt(@src(), label_str, .{}, label_opts);
+
+    mi.deinit();
+    return ret;
 }
 
 pub fn menuItemWithHotkey(src: std.builtin.SourceLocation, label_str: []const u8, hotkey: dvui.enums.Keybind, enabled: bool, init_opts: dvui.MenuItemWidget.InitOptions, opts: dvui.Options) ?dvui.Rect.Natural {

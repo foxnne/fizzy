@@ -68,6 +68,7 @@ pub const NativeMenuAction = enum(c_int) {
     grid_layout = 12,
     about = 13,
     check_for_updates = 14,
+    report_bug = 15,
 };
 
 // Queue a single pending native action id.
@@ -838,6 +839,23 @@ pub fn setupMacOSMenuBar() void {
     const help_menu = NSMenu.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "initWithTitle:", .{help_menu_title_str.value});
     if (help_menu.value != 0) {
         addNativeMenuItem(help_menu, NSMenuItem, NSString, target, "Check for Updates…", "checkForUpdates:", @intFromPtr(empty.value), 0, @intFromPtr(empty.value));
+        help_menu.msgSend(void, "addItem:", .{NSMenuItem.msgSend(objc.Object, "separatorItem", .{}).value});
+
+        // Report Bug → opens the GitHub Issues page in the user's browser.
+        // Inlined (instead of using `addNativeMenuItem`) so we can attach an SF Symbol.
+        if (fizzy_get_selector("reportBug:")) |report_bug_sel| {
+            const bug_title = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"Report Bug…".ptr});
+            const bug_item = help_menu.msgSend(objc.Object, "addItemWithTitle:action:keyEquivalent:", .{
+                bug_title.value,
+                report_bug_sel,
+                empty.value,
+            });
+            if (bug_item.value != 0) {
+                bug_item.msgSend(void, "setTarget:", .{target.value});
+                setMenuItemImage(bug_item, NSImage, NSString, "ant.fill", "Report Bug");
+            }
+        }
+
         const help_item = NSMenuItem.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
             help_menu_title_str.value,
             @as(usize, 0),
@@ -901,7 +919,7 @@ fn addNativeMenuItemWithTarget(menu: objc.Object, _: objc.Class, NSStringClass: 
 /// Returns and clears a pending native menu action (macOS menu bar). Call once per frame; on non-macOS always returns null.
 pub fn pollPendingNativeMenuAction() ?NativeMenuAction {
     const id = pending_native_menu_action_id.swap(-1, .acq_rel);
-    if (id < 0 or id > @intFromEnum(NativeMenuAction.check_for_updates)) return null;
+    if (id < 0 or id > @intFromEnum(NativeMenuAction.report_bug)) return null;
     return @enumFromInt(id);
 }
 

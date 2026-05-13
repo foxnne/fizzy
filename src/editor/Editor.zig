@@ -1148,6 +1148,9 @@ pub fn handleNativeMenuAction(editor: *Editor, action: fizzy.backend.NativeMenuA
             // here so the macOS Help → "Check for Updates…" path is congruent with the in-app affordance.
             Dialogs.AboutFizzy.request();
         },
+        .report_bug => {
+            _ = dvui.openURL(.{ .url = "https://github.com/foxnne/fizzy/issues" });
+        },
     }
 }
 

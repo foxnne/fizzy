@@ -183,6 +183,42 @@
     .release-line a { color: var(--text-muted); }
     .release-line a:hover { color: var(--accent); }
 
+    /* ── Early-dev banner ─────────────── */
+    .dev-banner {
+      background:
+        linear-gradient(90deg, rgba(206,120,105,0.18), rgba(214,199,130,0.14) 60%, transparent),
+        var(--fg);
+      border-bottom: 1px solid var(--fg-raised);
+    }
+    .dev-banner .inner {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 10px;
+      padding-block: 20px;
+      font-size: 13px; color: var(--text-muted);
+      text-align: center;
+    }
+    .dev-banner .pill {
+      display: inline-flex; align-items: center;
+      padding: 4px 12px; border-radius: 100px;
+      background: var(--red); color: var(--bg);
+      font-family: var(--mono); font-size: 10px; letter-spacing: 0.18em;
+    }
+    .dev-banner .msg { margin: 0; max-width: 640px; }
+    .dev-banner .msg b { color: var(--text); font-weight: 600; }
+    .dev-banner .issues-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; border-radius: 6px;
+      background: var(--fg-raised); color: var(--text);
+      font-weight: 600; font-size: 12px;
+      border: 1px solid var(--fg-raised);
+      transition: background .15s ease, border-color .15s ease, transform .15s ease;
+    }
+    .dev-banner .issues-link:hover {
+      background: var(--accent); color: var(--bg);
+      border-color: var(--accent); transform: translateY(-1px);
+    }
+    .dev-banner .issues-link svg { width: 14px; height: 14px; fill: currentColor; }
+
     /* ── Hero shot ───────────────────── */
     .hero-deck { display: flex; flex-direction: column; gap: 14px; }
     .hero-stack {
@@ -647,6 +683,21 @@
       </div>
     </div>
   </section>
+
+  <!-- ─────── Early-dev banner ─────── -->
+  <div class="dev-banner" role="note" aria-label="fizzy is early in development">
+    <div class="wrap inner">
+      <span class="pill">EARLY DEV</span>
+      <p class="msg">
+        <b>fizzy is in early development</b> — features may move or break between releases.
+        Found something off? Please tell us.
+      </p>
+      <a class="issues-link" href="https://github.com/foxnne/fizzy/issues" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8h-1.81A5.99 5.99 0 0 0 16 5.06l1.5-1.5-1.41-1.41-1.81 1.81C13.6 3.65 12.83 3.5 12 3.5s-1.6.15-2.28.46L7.91 2.15 6.5 3.56 8 5.06A5.99 5.99 0 0 0 6.81 8H5v2h1.09c-.06.32-.09.66-.09 1v1H5v2h1v1c0 .34.03.68.09 1H5v2h1.81C7.85 19.21 9.79 21 12 21s4.15-1.79 5.19-4H19v-2h-1.09c.06-.32.09-.66.09-1v-1h1v-2h-1v-1c0-.34-.03-.68-.09-1H19V8zm-6 10h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V8h2v2z"/></svg>
+        File an issue
+      </a>
+    </div>
+  </div>
 
   <!-- ─────── Features ─────── -->
   <section class="block" id="features">

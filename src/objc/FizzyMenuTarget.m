@@ -19,6 +19,7 @@ extern void FizzyNativeMenuAction(int id);
 - (void)showDvuiDemo:(id)sender;
 - (void)about:(id)sender;
 - (void)checkForUpdates:(id)sender;
+- (void)reportBug:(id)sender;
 @end
 
 @implementation FizzyMenuTarget
@@ -37,6 +38,7 @@ extern void FizzyNativeMenuAction(int id);
 - (void)showDvuiDemo:(id)sender  { (void)sender; FizzyNativeMenuAction(9); }
 - (void)about:(id)sender         { (void)sender; FizzyNativeMenuAction(13); }
 - (void)checkForUpdates:(id)sender { (void)sender; FizzyNativeMenuAction(14); }
+- (void)reportBug:(id)sender    { (void)sender; FizzyNativeMenuAction(15); }
 @end
 
 /* So Zig can get the SEL for setAction: without linking the Objective-C runtime directly. */
