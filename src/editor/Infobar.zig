@@ -2,9 +2,15 @@ const std = @import("std");
 const fizzy = @import("../fizzy.zig");
 const dvui = @import("dvui");
 const icons = @import("icons");
+const update_notify = @import("../update_notify.zig");
 const Dialogs = fizzy.Editor.Dialogs;
 
 pub const Infobar = @This();
+
+/// Most recent screen-Y of the infobar's top edge (window-natural pixels), set
+/// during `draw`. Editor reads this each frame to position the update toast
+/// just above the infobar. Reset to `null` on the first frame before any draw.
+pub var last_top_y: ?f32 = null;
 
 pub fn init() !Infobar {
     return .{};
@@ -27,6 +33,9 @@ pub fn draw(_: Infobar) !void {
         .margin = .all(0),
     });
     defer scrollarea.deinit();
+    // Publish the infobar's top-edge Y (window-natural pixels) so the update
+    // toast in `update_notify.drawAbove` can sit just above it.
+    last_top_y = scrollarea.data().rect.y;
     var infobox = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .background = false,
@@ -37,7 +46,14 @@ pub fn draw(_: Infobar) !void {
 
     {
         var button: dvui.ButtonWidget = undefined;
-        button.init(@src(), .{}, .{ .gravity_y = 0.5, .margin = .all(0), .padding = .all(0) });
+        button.init(@src(), .{}, .{
+            .gravity_y = 0.5,
+            .margin = .all(0),
+            .padding = .all(0),
+            .color_fill = .transparent,
+            .color_fill_hover = dvui.themeGet().color(.control, .fill_hover),
+            .color_fill_press = dvui.themeGet().color(.control, .fill_press),
+        });
         defer button.deinit();
         button.processEvents();
         button.drawBackground();
@@ -54,10 +70,24 @@ pub fn draw(_: Infobar) !void {
                 .x = 4,
             } },
         );
-        dvui.label(@src(), "Fizzy", .{}, .{ .font = font, .gravity_y = 0.5, .margin = .all(0) });
+        dvui.label(@src(), "fizzy", .{}, .{ .font = font, .gravity_y = 0.5, .margin = .all(0) });
 
         if (button.clicked()) {
             Dialogs.AboutFizzy.request();
+        }
+
+        if (update_notify.badgeVisible()) {
+            const brs = button.data().rectScale();
+            const br = brs.r;
+            const tr = br.topRight();
+            const center = tr.plus(.{ .x = -5 * brs.s, .y = 5 * brs.s });
+            var dot = dvui.Rect.Physical.fromPoint(center).toSize(.{ .w = 9 * brs.s, .h = 9 * brs.s });
+            dot.x -= 4.5 * brs.s;
+            dot.y -= 4.5 * brs.s;
+            dot.fill(dvui.Rect.Physical.all(4.5 * brs.s), .{
+                .color = dvui.themeGet().color(.highlight, .fill),
+                .fade = 0,
+            });
         }
     }
 

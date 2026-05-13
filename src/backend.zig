@@ -66,6 +66,8 @@ pub const NativeMenuAction = enum(c_int) {
     save_as = 10,
     new_file = 11,
     grid_layout = 12,
+    about = 13,
+    check_for_updates = 14,
 };
 
 // Queue a single pending native action id.
@@ -613,6 +615,14 @@ pub fn setTitlebarColor(win: *dvui.Window, color: dvui.Color) void {
     }
 }
 
+/// Override the SDL app metadata DVUI sets to its example defaults. On macOS this
+/// is what drives the app menu's `About <name>` / `Hide <name>` / `Quit <name>`
+/// items. Must be called before `setupMacOSMenuBar` so the inserted Help menu
+/// references the right product name.
+pub fn setSdlAppMetadata(name: [*:0]const u8, version: [*:0]const u8, identifier: [*:0]const u8) void {
+    _ = sdl3.SDL_SetAppMetadata(name, version, identifier);
+}
+
 var macos_menu_bar_set_up: bool = false;
 
 /// Inserts a "File" menu into the macOS app menu bar (between Apple and Window). Safe to call multiple times; runs once.
@@ -784,34 +794,45 @@ pub fn setupMacOSMenuBar() void {
         }
     }
 
-    // Window submenu under the Fizzy (app) menu — Minimize, Zoom, Bring All to Front (standard NS actions, target nil)
+    // App-menu cleanup:
+    //   1. Retitle and re-target the auto-generated "About …" item from SDL's default about-panel to AboutFizzy.
+    //   2. We do NOT add a Window submenu here — SDL/AppKit already inserts a top-level Window menu, and nesting one
+    //      inside the app menu produced a visible duplicate.
     const app_menu_item = main_menu.msgSend(objc.Object, "itemAtIndex:", .{@as(c_ulong, 0)});
     const app_submenu = app_menu_item.msgSend(objc.Object, "submenu", .{});
     if (app_submenu.value != 0) {
-        if (fizzy_get_selector("performMiniaturize:")) |perform_mini| {
-            if (fizzy_get_selector("performZoom:")) |perform_zoom| {
-                if (fizzy_get_selector("arrangeInFront:")) |arrange_front| {
-                    const window_menu = NSMenu.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "initWithTitle:", .{NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"Window".ptr}).value});
-                    if (window_menu.value != 0) {
-                        addNativeMenuItemWithTarget(window_menu, NSMenuItem, NSString, null, "Minimize", perform_mini, @intFromPtr(key_m.value), NSEventModifierFlagCommand, @intFromPtr(empty.value));
-                        addNativeMenuItemWithTarget(window_menu, NSMenuItem, NSString, null, "Zoom", perform_zoom, @intFromPtr(empty.value), 0, @intFromPtr(empty.value));
-                        addNativeMenuItemWithTarget(window_menu, NSMenuItem, NSString, null, "Bring All to Front", arrange_front, @intFromPtr(empty.value), 0, @intFromPtr(empty.value));
-                        app_submenu.msgSend(void, "addItem:", .{NSMenuItem.msgSend(objc.Object, "separatorItem", .{}).value});
-                        const window_item = NSMenuItem.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
-                            NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"Window".ptr}).value,
-                            @as(usize, 0),
-                            empty.value,
-                        });
-                        if (window_item.value != 0) {
-                            window_item.msgSend(void, "setSubmenu:", .{window_menu.value});
-                            app_submenu.msgSend(void, "addItem:", .{window_item.value});
-                        }
-                    }
-                }
+        if (fizzy_get_selector("about:")) |about_sel| {
+            const about_item = app_submenu.msgSend(objc.Object, "itemAtIndex:", .{@as(c_ulong, 0)});
+            if (about_item.value != 0) {
+                const about_title = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"About fizzy".ptr});
+                about_item.msgSend(void, "setTitle:", .{about_title.value});
+                about_item.msgSend(void, "setAction:", .{about_sel});
+                about_item.msgSend(void, "setTarget:", .{target.value});
             }
         }
     }
 
+    // Help menu — Check for Updates… (matches the infobar fizzy button: opens the AboutFizzy dialog).
+    const help_menu_title_str = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"Help".ptr});
+    const help_menu = NSMenu.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "initWithTitle:", .{help_menu_title_str.value});
+    if (help_menu.value != 0) {
+        addNativeMenuItem(help_menu, NSMenuItem, NSString, target, "Check for Updates…", "checkForUpdates:", @intFromPtr(empty.value), 0, @intFromPtr(empty.value));
+        const help_item = NSMenuItem.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
+            help_menu_title_str.value,
+            @as(usize, 0),
+            empty.value,
+        });
+        if (help_item.value != 0) {
+            help_item.msgSend(void, "setSubmenu:", .{help_menu.value});
+            // Append at the end so the conventional macOS order (App, File, Edit, View, …, Window, Help) is preserved.
+            main_menu.msgSend(void, "addItem:", .{help_item.value});
+            // Tell AppKit this is the Help menu so the system search field is wired in.
+            ns_app.msgSend(void, "setHelpMenu:", .{help_menu.value});
+        }
+    }
+
+    // key_m was previously used by the now-removed nested Window submenu; keep the binding silent.
+    _ = key_m;
     macos_menu_bar_set_up = true;
 }
 
@@ -859,7 +880,7 @@ fn addNativeMenuItemWithTarget(menu: objc.Object, _: objc.Class, NSStringClass: 
 /// Returns and clears a pending native menu action (macOS menu bar). Call once per frame; on non-macOS always returns null.
 pub fn pollPendingNativeMenuAction() ?NativeMenuAction {
     const id = pending_native_menu_action_id.swap(-1, .acq_rel);
-    if (id < 0 or id > @intFromEnum(NativeMenuAction.grid_layout)) return null;
+    if (id < 0 or id > @intFromEnum(NativeMenuAction.check_for_updates)) return null;
     return @enumFromInt(id);
 }
 

@@ -9,6 +9,7 @@ const icon = assets.files.@"icon.png";
 
 const fizzy = @import("fizzy.zig");
 const auto_update = @import("auto_update.zig");
+const update_notify = @import("update_notify.zig");
 
 const App = @This();
 const Editor = fizzy.Editor;
@@ -35,7 +36,7 @@ pub const dvui_app: dvui.App = .{
         .options = .{
             .size = .{ .w = 1200.0, .h = 800.0 },
             .min_size = .{ .w = 640.0, .h = 480.0 },
-            .title = "Fizzy",
+            .title = "fizzy",
             .icon = icon,
             .transparent = if (builtin.os.tag == .macos or builtin.os.tag == .windows) true else false,
             // macOS: Cancel-leading dialog/footer order; other platforms: OK-leading (matches dialog header close vs icon).
@@ -101,7 +102,16 @@ pub fn AppInit(win: *dvui.Window) !void {
     fizzy.packer = try allocator.create(Packer);
     fizzy.packer.* = Packer.init(allocator) catch unreachable;
 
+    // Override DVUI's default SDL metadata ("DVUI App Example") so the macOS
+    // app menu reads "About fizzy" / "Hide fizzy" / "Quit fizzy" and process
+    // listings show the real product name + version. `build_opts.app_version`
+    // is a non-sentinel slice, so allocate a null-terminated copy for SDL.
+    const version_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{build_opts.app_version}, 0) catch "0.0.0";
+    fizzy.backend.setSdlAppMetadata("fizzy", version_z, "com.foxnne.fizzy");
+
     fizzy.backend.setupMacOSMenuBar();
+
+    update_notify.startLaunchCheck(dvui.io, fizzy.editor.settings.debug_simulate_update_available);
 }
 
 // Run as app is shutting down before dvui.Window.deinit()

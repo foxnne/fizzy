@@ -310,8 +310,8 @@ pub fn build(b: *std.Build) !void {
             vpk_pkg_sh.addArg(zig_out_subdir);
             vpk_pkg_sh.addArg("--mainExe");
             vpk_pkg_sh.addArg(switch (target.result.os.tag) {
-                .windows => "Fizzy.exe",
-                else => "Fizzy",
+                .windows => "fizzy.exe",
+                else => "fizzy",
             });
 
             vpk_pkg_sh.addArg("--delta");
@@ -325,7 +325,7 @@ pub fn build(b: *std.Build) !void {
             switch (target.result.os.tag) {
                 .macos => {
                     vpk_pkg_sh.addArg("--packTitle");
-                    vpk_pkg_sh.addArg("Fizzy");
+                    vpk_pkg_sh.addArg("fizzy");
                     // Bundle id / document types / versions: assets/macos/info.plist (vpk rejects --bundleId with --plist).
                     vpk_pkg_sh.addArg("--plist");
                     const plist_path = b.path("assets/macos/info.plist").getPath3(b, &vpk_pkg_sh.step).toString(b.allocator) catch |e| std.debug.panic("plist path: {}", .{e});
@@ -671,7 +671,7 @@ fn addFizzyExecutableForTarget(
     msf_gif_module.addCSourceFile(.{ .file = std.Build.path(b, "src/deps/msf_gif/msf_gif.c") });
 
     const exe = b.addExecutable(.{
-        .name = "Fizzy",
+        .name = "fizzy",
         .root_module = b.addModule("App", .{
             .target = resolved_target,
             .optimize = optimize,

@@ -46,6 +46,9 @@ show_rulers: bool = true,
 /// When true, print frame/draw perf stats to the console (Debug / ReleaseSafe only for tick stats).
 perf_logging: bool = false,
 
+/// Pretend an app update is available (badge + launch toast). Restart after toggling.
+debug_simulate_update_available: bool = false,
+
 /// Padding to include in the size of the ruler outside of the font height.
 ruler_padding: f32 = 4.0,
 

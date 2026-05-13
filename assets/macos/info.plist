@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Fizzy</string>
+	<string>fizzy</string>
 	<key>CFBundleDisplayName</key>
-	<string>Fizzy</string>
+	<string>fizzy</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.foxnne.pixi</string>
+	<string>com.foxnne.fizzy</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.0.4</string>
 	<key>CFBundleVersion</key>
@@ -23,7 +23,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
-	<string>Fizzy</string>
+	<string>fizzy</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>LSMinimumSystemVersion</key>
@@ -35,14 +35,16 @@
 		<dict>
 			<key>CFBundleTypeExtensions</key>
 			<array>
-				<string>fizzy</string>
+				<string>fiz</string>
+				<string>pixi</string>
 				<string>png</string>
 				<string>jpg</string>
+				<string>jpeg</string>
 			</array>
 			<key>CFBundleTypeIconFile</key>
 			<string>fizzy.icns</string>
 			<key>CFBundleTypeName</key>
-			<string>Fizzy art files</string>
+			<string>fizzy art files</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 		</dict>
