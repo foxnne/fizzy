@@ -177,15 +177,15 @@ pub fn init(
         if (legacy) |legacy_path| {
             // Only rename if the new path doesn't already have content.
             const new_exists = blk: {
-                std.fs.accessAbsolute(config_folder, .{}) catch break :blk false;
+                std.Io.Dir.accessAbsolute(dvui.io, config_folder, .{ .read = true }) catch break :blk false;
                 break :blk true;
             };
             const legacy_exists = blk: {
-                std.fs.accessAbsolute(legacy_path, .{}) catch break :blk false;
+                std.Io.Dir.accessAbsolute(dvui.io, legacy_path, .{ .read = true }) catch break :blk false;
                 break :blk true;
             };
             if (legacy_exists and !new_exists) {
-                std.fs.renameAbsolute(legacy_path, config_folder) catch |err| {
+                std.Io.Dir.renameAbsolute(legacy_path, config_folder, dvui.io) catch |err| {
                     std.log.warn("legacy config folder migration ({s} -> {s}) failed: {s}", .{ legacy_path, config_folder, @errorName(err) });
                 };
             }
@@ -1010,8 +1010,12 @@ pub fn tick(editor: *Editor) !dvui.App.Result {
         // (We use a non-null subwindow_id on the toast so DVUI's default `toastsShow`
         // in Window.end skips it — see `update_notify.drawAbove`.)
         update_notify.tick();
-        if (Infobar.last_top_y) |infobar_y| {
-            update_notify.drawAbove(infobar_y, 8.0);
+        if (Infobar.last_top_y_physical) |infobar_y_physical| {
+            // Bottom-flush against the infobar's top edge. `last_top_y_physical`
+            // is in screen-space pixels so it matches FloatingWidget's `from`
+            // coordinate system; `drawAbove` self-sizes the pill so the bottom
+            // sits exactly at this y.
+            update_notify.drawAbove(infobar_y_physical, 4.0);
         }
     }
 

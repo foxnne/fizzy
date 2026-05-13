@@ -34,12 +34,8 @@ const SUBWINDOW_ID: dvui.Id = @enumFromInt(0xF122_DA70_AD0E_71D0);
 // Estimated toast size — used for the FloatingWidget bounding rect and for
 // computing the bottom-left anchor relative to the infobar. The real toast
 // auto-sizes inside, but the FloatingWidget needs an initial rect.
-const TOAST_W: f32 = 320.0;
-// Sized generously enough that the "Relaunch to update" button always fits even
-// with larger themes / DPI. The toast vbox uses `.gravity_y = 1.0` to
-// bottom-align inside this rect, so any slack ends up *above* the pill (in
-// transparent space) rather than between the pill and the infobar.
-const TOAST_H: f32 = 60.0;
+// Distance from the window's left edge to the toast's left edge (window-natural pixels).
+// Used as the anchor point in `drawAbove`; the FloatingWidget self-sizes vertically.
 const TOAST_MARGIN: f32 = 14.0;
 
 /// Call once after `Editor` (and settings) exist. Safe to call multiple times.
@@ -112,34 +108,39 @@ pub fn tick() void {
     id_mutex.mutex.unlock(dvui.io);
 }
 
-/// Render any armed toast in the bottom-left corner, sitting `gap_above_infobar`
-/// pixels above `infobar_top_y` (in window-natural pixels). No-op when there's
-/// no active toast for this module's subwindow.
+/// Render any armed toast in the bottom-left corner, with its bottom edge sitting
+/// `gap_above_infobar` natural-pixels above `infobar_top_y_physical` (the infobar's
+/// top edge in screen-space). No-op when there's no active toast for this subwindow.
 ///
 /// Call once per frame from the editor's main draw, AFTER the infobar so the
-/// caller knows the infobar's top-edge Y.
-pub fn drawAbove(infobar_top_y: f32, gap_above_infobar: f32) void {
+/// caller knows the infobar's screen-space top-edge Y.
+pub fn drawAbove(infobar_top_y_physical: f32, gap_above_infobar: f32) void {
     // Cheap exit when there's nothing armed for our subwindow.
     if (dvui.toastsFor(SUBWINDOW_ID) == null) return;
 
-    const win_w = dvui.windowRect().w;
-    const toast_w = @min(TOAST_W, win_w - 2 * TOAST_MARGIN);
-    const rect: dvui.Rect.Natural = .{
-        .x = TOAST_MARGIN,
-        .y = infobar_top_y - TOAST_H - gap_above_infobar,
-        .w = toast_w,
-        .h = TOAST_H,
+    // Anchor the toast's bottom-left corner at (TOAST_MARGIN, infobar_top - gap)
+    // in physical screen pixels. Using `from` instead of a fixed `rect` lets the
+    // FloatingWidget self-size to the toast pill's natural dimensions, so its
+    // bottom edge sits EXACTLY at the anchor — no leftover slack between the
+    // floating widget and the toast inside.
+    //
+    // `from_gravity_x = 1` → the anchor point is the floating's left edge.
+    // `from_gravity_y = 0` → the anchor point is the floating's bottom edge.
+    const scale = dvui.windowNaturalScale();
+    const anchor_physical: dvui.Point.Physical = .{
+        .x = TOAST_MARGIN * scale,
+        .y = infobar_top_y_physical - gap_above_infobar * scale,
     };
 
     var fw: dvui.FloatingWidget = undefined;
-    fw.init(@src(), .{}, .{ .rect = .cast(rect) });
+    fw.init(@src(), .{
+        .from = anchor_physical,
+        .from_gravity_x = 1.0,
+        .from_gravity_y = 0.0,
+    }, .{});
     defer fw.deinit();
 
-    // Mirror DVUI's `Window.toastsShow` body but skip its centered placement —
-    // the FloatingWidget already pins us to the desired bottom-left rect.
-    // `gravity_y = 1.0` bottom-aligns the pill inside the (over-sized) rect so
-    // its bottom edge sits flush at `infobar_top_y - gap_above_infobar`.
-    var vbox = dvui.box(@src(), .{}, .{ .expand = .none, .gravity_y = 1.0 });
+    var vbox = dvui.box(@src(), .{}, .{ .expand = .none });
     defer vbox.deinit();
 
     var it = dvui.toastsFor(SUBWINDOW_ID) orelse return;

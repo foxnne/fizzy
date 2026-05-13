@@ -7,10 +7,11 @@ const Dialogs = fizzy.Editor.Dialogs;
 
 pub const Infobar = @This();
 
-/// Most recent screen-Y of the infobar's top edge (window-natural pixels), set
-/// during `draw`. Editor reads this each frame to position the update toast
-/// just above the infobar. Reset to `null` on the first frame before any draw.
-pub var last_top_y: ?f32 = null;
+/// Most recent SCREEN-space (physical pixel) Y of the infobar's top edge, set
+/// during `draw`. Used by `update_notify.drawAbove` to anchor the launch toast
+/// directly above the infobar. Physical coords because FloatingWidget's `from`
+/// anchor takes a `Point.Physical`. `null` until the first draw has run.
+pub var last_top_y_physical: ?f32 = null;
 
 pub fn init() !Infobar {
     return .{};
@@ -33,9 +34,8 @@ pub fn draw(_: Infobar) !void {
         .margin = .all(0),
     });
     defer scrollarea.deinit();
-    // Publish the infobar's top-edge Y (window-natural pixels) so the update
-    // toast in `update_notify.drawAbove` can sit just above it.
-    last_top_y = scrollarea.data().rect.y;
+
+    last_top_y_physical = scrollarea.data().rectScale().r.y;
     var infobox = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .background = false,

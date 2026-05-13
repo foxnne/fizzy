@@ -796,7 +796,10 @@ pub fn setupMacOSMenuBar() void {
 
     // App-menu cleanup:
     //   1. Retitle and re-target the auto-generated "About …" item from SDL's default about-panel to AboutFizzy.
-    //   2. We do NOT add a Window submenu here — SDL/AppKit already inserts a top-level Window menu, and nesting one
+    //   2. Substring-replace any remaining "DVUI App Example" in submenu titles ("Hide …", "Quit …", etc.).
+    //      SDL stamped those titles using its own app metadata before our `setSdlAppMetadata` had a chance to run,
+    //      and the labels are baked into the NSMenuItems — setting metadata later doesn't retroactively rename them.
+    //   3. We do NOT add a Window submenu here — SDL/AppKit already inserts a top-level Window menu, and nesting one
     //      inside the app menu produced a visible duplicate.
     const app_menu_item = main_menu.msgSend(objc.Object, "itemAtIndex:", .{@as(c_ulong, 0)});
     const app_submenu = app_menu_item.msgSend(objc.Object, "submenu", .{});
@@ -808,6 +811,24 @@ pub fn setupMacOSMenuBar() void {
                 about_item.msgSend(void, "setTitle:", .{about_title.value});
                 about_item.msgSend(void, "setAction:", .{about_sel});
                 about_item.msgSend(void, "setTarget:", .{target.value});
+            }
+        }
+
+        // Patch every remaining "DVUI App Example" → "fizzy" in app-menu item titles.
+        // `stringByReplacingOccurrencesOfString:withString:` is a no-op when the substring
+        // isn't present, so it's safe to apply unconditionally over the whole menu.
+        const search_str = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"DVUI App Example".ptr});
+        const replacement_str = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"fizzy".ptr});
+        const item_count = app_submenu.msgSend(c_long, "numberOfItems", .{});
+        var idx: c_long = 0;
+        while (idx < item_count) : (idx += 1) {
+            const item = app_submenu.msgSend(objc.Object, "itemAtIndex:", .{idx});
+            if (item.value == 0) continue;
+            const cur_title = item.msgSend(objc.Object, "title", .{});
+            if (cur_title.value == 0) continue;
+            const new_title = cur_title.msgSend(objc.Object, "stringByReplacingOccurrencesOfString:withString:", .{ search_str.value, replacement_str.value });
+            if (new_title.value != 0) {
+                item.msgSend(void, "setTitle:", .{new_title.value});
             }
         }
     }

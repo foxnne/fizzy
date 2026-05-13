@@ -1,8 +1,6 @@
-assets/palettes/endesga-32.hex eol=crlf
-assets/palettes/resurrect-64.hex eol=crlf
-assets/palettes/apollo.hex eol=crlf
-assets/palettes/cc-29.hex eol=crlf
-assets/palettes/pico-8.hex eol=crlf
-assets/palettes/pear36.hex eol=crlf
-assets/palettes/journey.hex eol=crlf
-assets/palettes/lospec500.hex eol=crlf
+# Palette files are plain text and should be LF-everywhere. The old per-file
+# `eol=crlf` directives never actually fired (the files were committed as LF
+# and git's smudge filter left them alone), but jj's `eol-conversion = "input"`
+# kept flagging the remaining CRLF stragglers as modified. Normalizing here
+# makes both git and jj agree without relying on user-level config.
+*.hex text eol=lf
