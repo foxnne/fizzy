@@ -612,6 +612,159 @@ pub fn toastDisplay(id: dvui.Id) !void {
     }
 }
 
+/// Fizzy-themed bubble spinner. N small filled dots arranged on a ring; each pulses size
+/// and alpha in a sine wave with a phase offset around the circle, giving a wave of
+/// brightness that rotates — like bubbles rising in a fizzy drink. Uses dvui's animation
+/// loop for the time base, so dvui keeps refreshing on its own while the spinner is alive.
+///
+/// `options.color(.text)` is the dot colour. The widget self-sizes to `min_size_content`
+/// (default 50×50); the ring fills the inner content rect.
+pub fn bubbleSpinner(src: std.builtin.SourceLocation, opts: dvui.Options) void {
+    const dot_count: u32 = 7;
+    // ~1s wave feels lively without buzzing. dvui's stock spinner is 3s; this is brisker so
+    // it reads as "active progress" rather than "thinking".
+    const period_micros: i32 = 1_050_000;
+
+    var defaults: dvui.Options = .{
+        .name = "BubbleSpinner",
+        .min_size_content = .{ .w = 50, .h = 50 },
+    };
+    const options = defaults.override(opts);
+    var wd = dvui.WidgetData.init(src, .{}, options);
+    wd.register();
+    wd.minSizeSetAndRefresh();
+    wd.minSizeReportToParent();
+    if (wd.rect.empty()) return;
+
+    const rs = wd.contentRectScale();
+    const r = rs.r;
+
+    // Loop the time base seamlessly: when the previous cycle's animation expires, start the
+    // next one at the same instant so the wave wraps without skipping a beat.
+    var t: f32 = 0;
+    const anim: dvui.Animation = .{ .end_time = period_micros };
+    if (dvui.animationGet(wd.id, "_t")) |a| {
+        var aa = a;
+        if (aa.done()) {
+            aa = anim;
+            aa.start_time = a.end_time;
+            aa.end_time += a.end_time;
+            dvui.animation(wd.id, "_t", aa);
+        }
+        t = aa.value();
+    } else {
+        dvui.animation(wd.id, "_t", anim);
+    }
+
+    const center = r.center();
+    // Ring radius eats most of the box; dot radius is the remaining budget. `0.78 / 0.18`
+    // leaves a sliver of breathing room around the dots at their peak size.
+    const bounding_radius = @min(r.w, r.h) * 0.5;
+    const ring_radius = bounding_radius * 0.78;
+    const dot_max_radius = bounding_radius * 0.18;
+    const dot_min_scale: f32 = 0.35;
+
+    const text_color = options.color(.text);
+    const base_alpha_f: f32 = @floatFromInt(text_color.a);
+
+    var i: u32 = 0;
+    while (i < dot_count) : (i += 1) {
+        // Angle around the ring (12 o'clock = -π/2). Phase offset = i / N so the wave
+        // travels around in one full period.
+        const angle = -std.math.pi * 0.5 + 2 * std.math.pi * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(dot_count));
+        const phase = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(dot_count));
+        const local_t = @mod(t + phase, 1.0);
+        // sin(π·x) is 0 → 1 → 0 over x ∈ [0,1]; gives each dot a smooth grow/shrink pulse
+        // with no abrupt edge at the cycle boundary.
+        const pulse = @sin(std.math.pi * local_t);
+
+        const dot_radius = dot_max_radius * (dot_min_scale + (1.0 - dot_min_scale) * pulse);
+        const dot_center: dvui.Point.Physical = .{
+            .x = center.x + ring_radius * @cos(angle),
+            .y = center.y + ring_radius * @sin(angle),
+        };
+
+        // Alpha rides the same pulse curve, biased so dots never disappear entirely — they
+        // bottom out around 25% of the source alpha so the ring stays visible as a faint
+        // outline even between peaks.
+        const alpha_floor: f32 = 0.25;
+        const alpha_mul = alpha_floor + (1.0 - alpha_floor) * pulse;
+        const dot_color: dvui.Color = .{
+            .r = text_color.r,
+            .g = text_color.g,
+            .b = text_color.b,
+            .a = @intFromFloat(base_alpha_f * alpha_mul),
+        };
+
+        var path: dvui.Path.Builder = .init(dvui.currentWindow().lifo());
+        defer path.deinit();
+        // Full sweep = filled circle. dvui's `addArc` walks `a` *decreasing* from `start`
+        // toward `end`, so the arc must go from 2π down to 0 (not 0 → 2π — that produces a
+        // single point and fillConvex draws nothing). `skip_end=true` avoids duplicating the
+        // start vertex (since end angle 0 and start angle 2π are the same point).
+        path.addArc(dot_center, dot_radius, 2 * std.math.pi, 0, true);
+        path.build().fillConvex(.{ .color = dot_color });
+    }
+}
+
+/// Subwindow id used for save-complete toasts. Distinct from the canvas subwindow so
+/// `Workspace.drawCanvas`'s `toastsShow` won't render them — instead `Editor.drawSaveToasts`
+/// iterates this id and renders centered cards matching the loading-overlay style.
+pub const save_toast_subwindow_id: dvui.Id = @enumFromInt(0xF12_5A4E_71D0_5A4E);
+
+/// Custom toast display for save-complete events. Visually matches `Editor.drawLoadingOverlay`:
+/// content-fill @ 0.85 background, drop shadow, checkmark icon + "Saved <basename>" label.
+/// Auto-fades when the toast timer expires. The message is read from `_message` data on the
+/// toast id (set by `toastAdd` caller).
+pub fn saveCompleteToastDisplay(id: dvui.Id) !void {
+    const message = dvui.dataGetSlice(null, id, "_message", []u8) orelse {
+        dvui.log.err("saveCompleteToastDisplay lost data for toast {x}\n", .{id});
+        return;
+    };
+
+    var animator = dvui.animate(@src(), .{ .kind = .alpha, .duration = 350_000 }, .{
+        .id_extra = id.asUsize(),
+    });
+    defer animator.deinit();
+
+    var card = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = id.asUsize(),
+        .background = true,
+        .corner_radius = dvui.Rect.all(8),
+        .padding = .{ .x = 16, .y = 12, .w = 16, .h = 12 },
+        .color_fill = dvui.themeGet().color(.content, .fill).opacity(0.85),
+        .box_shadow = .{
+            .color = .black,
+            .offset = .{ .x = -2.0, .y = 2.0 },
+            .fade = 12.0,
+            .alpha = 0.35,
+            .corner_radius = dvui.Rect.all(8),
+        },
+    });
+    defer card.deinit();
+
+    dvui.icon(@src(), "save_check", icons.tvg.lucide.check, .{
+        .stroke_color = dvui.themeGet().color(.highlight, .fill),
+        .fill_color = dvui.themeGet().color(.highlight, .fill),
+    }, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 20, .h = 20 },
+        .padding = .{ .w = 10 },
+    });
+
+    dvui.labelNoFmt(@src(), message, .{}, .{
+        .gravity_y = 0.5,
+        .color_text = dvui.themeGet().color(.content, .text),
+    });
+
+    if (dvui.timerDone(id)) {
+        animator.startEnd();
+    }
+    if (animator.end()) {
+        dvui.toastRemove(id);
+    }
+}
+
 pub const SpriteInitOptions = struct {
     source: dvui.ImageSource,
     file: ?*fizzy.Internal.File = null,

@@ -6,7 +6,7 @@ pub const CanvasWidget = @This();
 
 /// Canvas reveal fade duration in microseconds. Tuned to overlap noticeably with pane open
 /// animations so the canvas doesn't pop in after them. Adjust here, not at the call site.
-const fade_duration_micros: i32 = 350_000;
+const fade_duration_micros: i32 = 150_000;
 
 id: dvui.Id = undefined,
 installed: bool = false,
