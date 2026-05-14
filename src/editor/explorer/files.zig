@@ -705,7 +705,19 @@ pub fn recurseFiles(root_directory: []const u8, outer_tree: *fizzy.dvui.TreeWidg
                         };
 
                         if (fizzy.editor.getFileFromPath(abs_path)) |file| {
-                            if (file.dirty()) {
+                            // Save spinner takes priority over the dirty dot: while a file is
+                            // mid-save it's no longer "dirty waiting to be saved", it's "saving
+                            // right now", and the user needs that distinction at a glance when
+                            // multiple files are flushing in parallel. `isSaving` reads via an
+                            // atomic load so the background `saveZip` worker can flip the flag
+                            // safely from another thread.
+                            if (file.isSaving()) {
+                                fizzy.dvui.bubbleSpinner(@src(), .{
+                                    .min_size_content = .{ .w = 14, .h = 14 },
+                                    .gravity_y = 0.5,
+                                    .color_text = dvui.themeGet().color(.window, .text),
+                                });
+                            } else if (file.dirty()) {
                                 _ = dvui.icon(
                                     @src(),
                                     "DirtyIcon",

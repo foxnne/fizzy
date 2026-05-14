@@ -39,6 +39,7 @@ pub const Panel = @import("panel/Panel.zig");
 pub const Sidebar = @import("Sidebar.zig");
 pub const Infobar = @import("Infobar.zig");
 pub const Menu = @import("Menu.zig");
+pub const FileLoadJob = @import("FileLoadJob.zig");
 
 /// This arena is for small per-frame editor allocations, such as path joins, null terminations and labels.
 /// Do not free these allocations, instead, this allocator will be .reset(.retain_capacity) each frame
@@ -72,6 +73,16 @@ ignore: IgnoreRules = .{},
 themes: std.ArrayList(dvui.Theme) = .empty,
 
 open_files: std.AutoArrayHashMapUnmanaged(u64, fizzy.Internal.File) = .empty,
+
+/// Background file-load jobs in flight. Keyed by absolute path. Each job's worker thread runs
+/// `Internal.File.fromPath` off the main thread; the main thread polls via `processLoadingJobs`
+/// and moves completed results into `open_files`. The map owns its key strings via each job's
+/// `path` allocation; the StringHashMap stores key slices that point into job memory.
+loading_jobs: std.StringHashMapUnmanaged(*FileLoadJob) = .empty,
+/// True iff a loading job should set its target file as the active file once it lands.
+/// `setActiveFile`-on-completion respects the most recent open request — multiple in-flight
+/// loads only auto-focus the most recently requested one.
+last_load_request_path: ?[]const u8 = null,
 
 // The actively focused workspace grouping ID
 // This will contain tabs for all open files with a matching grouping ID
@@ -610,6 +621,10 @@ pub fn tick(editor: *Editor) !dvui.App.Result {
     if (fizzy.perf.record) fizzy.perf.beginFrame();
     defer if (fizzy.perf.record) fizzy.perf.endFrameAndMaybeLog();
 
+    // Reap completed background file loads. Must run BEFORE `pending_composite_warmup` and any
+    // workspace/file iteration so that a just-loaded file is visible to the rest of this frame.
+    editor.processLoadingJobs();
+
     if (editor.pending_composite_warmup) {
         editor.pending_composite_warmup = false;
         if (editor.activeFile()) |file| {
@@ -1021,6 +1036,15 @@ pub fn tick(editor: *Editor) !dvui.App.Result {
 
     // look at demo() for examples of dvui widgets, shows in a floating window
     dvui.Examples.demo(.full);
+
+    // Render a centered loading overlay for any background file-load job that has been
+    // running long enough to warrant UI feedback. Small files complete before the threshold
+    // and never flash this. Non-modal — user can keep working in other tabs while loading.
+    editor.drawLoadingOverlay();
+    // Render any save-complete toasts in the same centered, content-fill-styled card system.
+    // The dvui toast queue holds them with a 2.5s timeout; each toast's display function fades
+    // out and removes itself when the timer expires.
+    editor.drawSaveToasts();
 
     editor.saveSettingsGuarded() catch |err| {
         dvui.log.err("Failed to autosave settings ({s})", .{@errorName(err)});
@@ -1623,6 +1647,7 @@ pub fn clearFileTreeTabDragDropState(editor: *Editor) void {
 }
 
 pub fn openFilePath(editor: *Editor, path: []const u8, grouping: u64) !bool {
+    // Already open? Just focus it.
     for (editor.open_files.values(), 0..) |*file, i| {
         if (std.mem.eql(u8, file.path, path)) {
             editor.setActiveFile(i);
@@ -1630,22 +1655,261 @@ pub fn openFilePath(editor: *Editor, path: []const u8, grouping: u64) !bool {
         }
     }
 
-    if (fizzy.Internal.File.fromPath(path) catch null) |file| {
-        try editor.open_files.put(fizzy.app.allocator, file.id, file);
-        if (editor.open_files.getPtr(file.id)) |f| {
-            f.editor.grouping = grouping;
+    // Already loading? Mark this as the most-recent request so it gets focused on completion.
+    if (editor.loading_jobs.getKey(path)) |existing_key| {
+        editor.last_load_request_path = existing_key;
+        return false;
+    }
+
+    // Spawn a worker. The job owns the path string we'll key the map by.
+    const job = try FileLoadJob.create(fizzy.app.allocator, path, grouping);
+    errdefer job.destroy();
+
+    try editor.loading_jobs.put(fizzy.app.allocator, job.path, job);
+    editor.last_load_request_path = job.path;
+
+    const thread = std.Thread.spawn(.{}, FileLoadJob.workerMain, .{job}) catch |err| {
+        _ = editor.loading_jobs.remove(job.path);
+        job.destroy();
+        return err;
+    };
+    thread.detach();
+
+    return true;
+}
+
+/// Per-frame sweep called from `tick`. Moves completed load jobs into `open_files`, cleans up
+/// failed/cancelled jobs, and focuses the most-recently-requested file as it completes.
+pub fn processLoadingJobs(editor: *Editor) void {
+    if (editor.loading_jobs.count() == 0) return;
+
+    // Snapshot the job pointers because we'll be mutating the map during iteration.
+    var to_remove: std.ArrayListUnmanaged(*FileLoadJob) = .empty;
+    defer to_remove.deinit(fizzy.app.allocator);
+
+    var it = editor.loading_jobs.valueIterator();
+    while (it.next()) |job_ptr| {
+        const job = job_ptr.*;
+        if (!job.done.load(.acquire)) continue;
+        to_remove.append(fizzy.app.allocator, job) catch continue;
+    }
+
+    for (to_remove.items) |job| {
+        _ = editor.loading_jobs.remove(job.path);
+
+        const phase = job.currentPhase();
+        switch (phase) {
+            .ready => {
+                if (job.result) |result| {
+                    var file = result;
+                    file.editor.grouping = job.target_grouping;
+
+                    editor.open_files.put(fizzy.app.allocator, file.id, file) catch {
+                        dvui.log.err("Failed to insert loaded file into open_files: {s}", .{job.path});
+                        // We still own `file` here — clean it up.
+                        var f = file;
+                        f.deinit();
+                        job.destroy();
+                        continue;
+                    };
+
+                    // Focus this file iff it's the most recently requested load. Multiple
+                    // simultaneous loads only auto-focus the latest; others land silently.
+                    const should_focus = editor.last_load_request_path != null and
+                        std.mem.eql(u8, editor.last_load_request_path.?, job.path);
+                    if (should_focus) {
+                        if (editor.open_files.getIndex(file.id)) |idx| {
+                            editor.setActiveFile(idx);
+                            editor.last_load_request_path = null;
+                        }
+                        editor.pending_composite_warmup = true;
+                    }
+                } else {
+                    dvui.log.err("Load job reported ready but result was null: {s}", .{job.path});
+                }
+            },
+            .failed => {
+                dvui.log.err("Failed to open file: {s} ({any})", .{ job.path, job.err });
+            },
+            .cancelled => {
+                // No-op: result already discarded by the worker.
+            },
+            else => {
+                dvui.log.err("Load job finished in unexpected phase {s}: {s}", .{ @tagName(phase), job.path });
+            },
         }
 
-        // At this point, if the workspace grouping doesn't exist, it will next frame
-        // once the workspaces are rebuilt. Since we cant wait on that, go ahead and set it now
-        //editor.open_workspace_grouping = grouping;
-
-        // If the workspace grouping does exist, go ahead and set the active file
-        editor.setActiveFile(editor.open_files.count() - 1);
-        editor.pending_composite_warmup = true;
-        return true;
+        job.destroy();
     }
-    return error.FailedToOpenFile;
+}
+
+/// Returns the active workspace's canvas content rect (physical pixels) captured from the
+/// previous frame's draw, if available. Falls back to `null` before the first workspace draw.
+/// Used by `drawLoadingOverlay` / `drawSaveToasts` to center their cards over the canvas area
+/// the user is currently looking at, instead of the raw OS window rect.
+pub fn activeWorkspaceCanvasRectPhysical(editor: *Editor) ?dvui.Rect.Physical {
+    const workspace = editor.workspaces.getPtr(editor.open_workspace_grouping) orelse return null;
+    return workspace.canvas_rect_physical;
+}
+
+/// Cancel every in-flight load. Workers exit at the next cancellation checkpoint (after
+/// `fromPath` returns) and discard their results. Used on app quit.
+pub fn cancelAllLoadingJobs(editor: *Editor) void {
+    var it = editor.loading_jobs.valueIterator();
+    while (it.next()) |job_ptr| {
+        job_ptr.*.cancelled.store(true, .monotonic);
+    }
+}
+
+/// Iterates the save-complete toast subwindow (`fizzy.dvui.save_toast_subwindow_id`) and
+/// renders each toast inside a self-sized floating column anchored to the bottom-center of
+/// the viewport, so back-to-back saves stack vertically rather than overlapping. Each toast's
+/// display function (`saveCompleteToastDisplay`) builds its own card body + fade-out animator
+/// + self-remove on timer expiry.
+pub fn drawSaveToasts(editor: *Editor) void {
+    if (dvui.toastsFor(fizzy.dvui.save_toast_subwindow_id) == null) return;
+
+    // Anchor at the center of the active workspace's canvas rect (in physical pixels). Using
+    // `from` + `from_gravity = 0.5,0.5` lets the FloatingWidget self-size to the toast column
+    // and centers it around the anchor. Falls back to the window center if no workspace has
+    // rendered yet.
+    const anchor_physical: dvui.Point.Physical = if (editor.activeWorkspaceCanvasRectPhysical()) |r| .{
+        .x = r.x + r.w * 0.5,
+        .y = r.y + r.h * 0.5,
+    } else blk: {
+        const win_pix = dvui.windowRectPixels();
+        break :blk .{
+            .x = win_pix.x + win_pix.w * 0.5,
+            .y = win_pix.y + win_pix.h * 0.5,
+        };
+    };
+
+    var fw: dvui.FloatingWidget = undefined;
+    fw.init(@src(), .{
+        .mouse_events = false,
+        .from = anchor_physical,
+        .from_gravity_x = 0.5,
+        .from_gravity_y = 0.5,
+    }, .{});
+    defer fw.deinit();
+
+    var col = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .none });
+    defer col.deinit();
+
+    var it = dvui.toastsFor(fizzy.dvui.save_toast_subwindow_id) orelse return;
+    while (it.next()) |t| {
+        t.display(t.id) catch |err| {
+            dvui.log.err("save toast display: {any}", .{err});
+        };
+    }
+}
+
+/// Centered floating card listing in-flight file loads that have been running long enough to
+/// warrant UI feedback. Non-modal: the user can keep interacting with the rest of the editor.
+/// Called once per frame from `tick`.
+pub fn drawLoadingOverlay(editor: *Editor) void {
+    if (editor.loading_jobs.count() == 0) return;
+
+    // Skip jobs that completed in under `toast_threshold_ms` to avoid flashing the UI for
+    // small files. If every in-flight job is still under the threshold, render nothing.
+    const toast_threshold_ms: i64 = 150;
+    var visible_count: usize = 0;
+    var it_count = editor.loading_jobs.valueIterator();
+    while (it_count.next()) |job_ptr| {
+        if (job_ptr.*.elapsedExceeds(toast_threshold_ms)) visible_count += 1;
+    }
+    if (visible_count == 0) return;
+
+    // Prefer centering over the active workspace's canvas rect so the toast appears where the
+    // user is looking. Fall back to the OS window rect on the very first frame before any
+    // workspace has drawn, or if there's no active workspace (e.g., empty app state).
+    //
+    // Single-line rows keep multi-file loads compact: spinner + "<basename> — <phase>…" on one
+    // baseline. `row_h` is the natural-pixel height each row contributes to the card; the
+    // header band adds a fixed amount on top.
+    const card_w: f32 = 320;
+    const row_h: f32 = 26;
+    const header_h: f32 = 32;
+    const card_h: f32 = header_h + @as(f32, @floatFromInt(visible_count)) * row_h;
+    const card_rect: dvui.Rect = blk: {
+        if (editor.activeWorkspaceCanvasRectPhysical()) |rs_phys| {
+            const rs_natural = rs_phys.toNatural();
+            break :blk .{
+                .x = rs_natural.x + (rs_natural.w - card_w) * 0.5,
+                .y = rs_natural.y + (rs_natural.h - card_h) * 0.5,
+                .w = card_w,
+                .h = card_h,
+            };
+        }
+        const window_rect = dvui.windowRect();
+        break :blk .{
+            .x = (window_rect.w - card_w) * 0.5,
+            .y = (window_rect.h - card_h) * 0.5,
+            .w = card_w,
+            .h = card_h,
+        };
+    };
+
+    var fw: dvui.FloatingWidget = undefined;
+    fw.init(@src(), .{ .mouse_events = false }, .{
+        .rect = card_rect,
+        .background = true,
+        // Content-fill @ 0.85 matches the look of the other dialog-style popups in the editor.
+        .color_fill = dvui.themeGet().color(.content, .fill).opacity(0.85),
+        .corner_radius = dvui.Rect.all(8),
+        .box_shadow = .{
+            .color = .black,
+            .offset = .{ .x = -2.0, .y = 2.0 },
+            .fade = 12.0,
+            .alpha = 0.35,
+            .corner_radius = dvui.Rect.all(8),
+        },
+    });
+    defer fw.deinit();
+
+    var outer = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
+        .padding = .{ .x = 12, .y = 8, .w = 12, .h = 8 },
+    });
+    defer outer.deinit();
+
+    dvui.labelNoFmt(@src(), "Loading…", .{}, .{
+        .font = dvui.Font.theme(.heading),
+        .color_text = dvui.themeGet().color(.content, .text),
+        .padding = .{ .h = 2 },
+    });
+
+    var key_it = editor.loading_jobs.iterator();
+    var entry_idx: usize = 0;
+    while (key_it.next()) |entry| : (entry_idx += 1) {
+        const job = entry.value_ptr.*;
+        if (!job.elapsedExceeds(toast_threshold_ms)) continue;
+
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = entry_idx,
+            .expand = .horizontal,
+            .padding = .{ .y = 1, .h = 1 },
+        });
+        defer row.deinit();
+
+        // Single-line layout: small bubble spinner + "<basename> — <phase>…" on one baseline.
+        // Keeps multi-file load lists compact (each row ~26 nat-px tall) while still showing
+        // both the file identity and what's currently happening to it.
+        fizzy.dvui.bubbleSpinner(@src(), .{
+            .min_size_content = .{ .w = 18, .h = 18 },
+            .gravity_y = 0.5,
+            .color_text = dvui.themeGet().color(.content, .text),
+            .padding = .{ .w = 8 },
+        });
+
+        const basename = std.fs.path.basename(job.path);
+        const phase = job.currentPhase();
+        dvui.label(@src(), "{s} — {s}…", .{ basename, FileLoadJob.phaseLabel(phase) }, .{
+            .expand = .horizontal,
+            .gravity_y = 0.5,
+            .color_text = dvui.themeGet().color(.content, .text),
+        });
+    }
 }
 
 pub fn requestCompositeWarmup(editor: *Editor) void {
@@ -2322,6 +2586,24 @@ pub fn closeReference(editor: *Editor, index: usize) !void {
 }
 
 pub fn deinit(editor: *Editor) !void {
+    // Signal cancel to any in-flight load workers. They check the flag after `fromPath` returns
+    // and discard the result; we can't synchronously join them without blocking quit, so we
+    // accept a brief window where a worker may still be running with a discardable result.
+    // The detached threads' allocations are short-lived (heap file structs); leaking them on
+    // hard quit is acceptable here.
+    editor.cancelAllLoadingJobs();
+    // Drop our bookkeeping for the jobs. Worker threads still own their result memory until
+    // they observe the cancellation and discard it; the process is exiting anyway.
+    {
+        var it = editor.loading_jobs.valueIterator();
+        while (it.next()) |job_ptr| {
+            // Detached worker still references the job. Leak the FileLoadJob struct on quit
+            // — better than a use-after-free if the worker hasn't yet observed cancellation.
+            _ = job_ptr;
+        }
+        editor.loading_jobs.deinit(fizzy.app.allocator);
+    }
+
     if (editor.tab_drag_from_tree_path) |p| {
         fizzy.app.allocator.free(p);
         editor.tab_drag_from_tree_path = null;

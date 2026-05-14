@@ -43,6 +43,12 @@ vertical_scroll_info: dvui.ScrollInfo = .{ .vertical = .given, .horizontal = .gi
 horizontal_ruler_height: f32 = 0.0,
 vertical_ruler_width: f32 = 0.0,
 
+/// Physical-pixel content rect of this workspace's canvas vbox, captured each frame during
+/// `drawCanvas` / `drawProject`. `null` until the workspace has rendered at least once. Used
+/// by the editor-level load/save toast overlays to center cards over the area the user is
+/// actually looking at (rather than the OS window rect).
+canvas_rect_physical: ?dvui.Rect.Physical = null,
+
 pub fn init(grouping: u64) Workspace {
     return .{
         .grouping = grouping,
@@ -153,6 +159,7 @@ fn drawProject(self: *Workspace) void {
     // Match `drawCanvas`: no outer fill when showing centered card (transparency shows through like homepage).
     var canvas_vbox = workspaceMainCanvasVbox(content_color, show_packed_atlas, self.grouping);
     defer {
+        self.canvas_rect_physical = canvas_vbox.data().contentRectScale().r;
         dvui.toastsShow(canvas_vbox.data().id, canvas_vbox.data().contentRectScale().r.toNatural());
         canvas_vbox.deinit();
     }
@@ -383,7 +390,22 @@ fn drawTabs(self: *Workspace) void {
                 });
                 defer status_close_box.deinit();
 
-                if (tab_hovered) {
+                // Saving has priority over hover/close/dirty indicators: the user wants visible
+                // confirmation that the save is in flight, and the slot's size matches the close
+                // button so the layout doesn't shift when saving starts/ends. `editor.saving`
+                // can be written by a background save worker (`saveZip`), so we read it with an
+                // atomic load — the write side uses an atomic store in matching `save*` paths.
+                const is_saving = @atomicLoad(bool, &file.editor.saving, .monotonic);
+                if (is_saving) {
+                    fizzy.dvui.bubbleSpinner(@src(), .{
+                        .id_extra = i *% 16 + 5,
+                        .expand = .none,
+                        .min_size_content = .{ .w = close_inner, .h = close_inner },
+                        .gravity_x = 0.5,
+                        .gravity_y = 0.5,
+                        .color_text = dvui.themeGet().color(.window, .text),
+                    });
+                } else if (tab_hovered) {
                     var tab_close_button: dvui.ButtonWidget = undefined;
                     tab_close_button.init(@src(), .{ .draw_focus = false }, fizzy.dvui.windowHeaderCloseButtonOptions(.{
                         .expand = .none,
@@ -793,6 +815,7 @@ pub fn drawCanvas(self: *Workspace) !void {
 
     var canvas_vbox = workspaceMainCanvasVbox(content_color, has_files, self.grouping);
     defer {
+        self.canvas_rect_physical = canvas_vbox.data().contentRectScale().r;
         dvui.toastsShow(canvas_vbox.data().id, canvas_vbox.data().contentRectScale().r.toNatural());
         canvas_vbox.deinit();
     }

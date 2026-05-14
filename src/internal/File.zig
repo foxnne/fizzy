@@ -229,6 +229,19 @@ pub fn height(file: *const File) u32 {
     return file.rows * file.row_height;
 }
 
+/// Set the save-in-progress flag with an atomic store. `saveZip` runs on a background worker
+/// thread and writes through this helper; the main thread reads via `isSaving()` for the tab
+/// strip spinner. `monotonic` is sufficient — we don't synchronize any other data through this
+/// flag, just publish the boolean.
+pub fn setSaving(file: *File, v: bool) void {
+    @atomicStore(bool, &file.editor.saving, v, .monotonic);
+}
+
+/// Atomic-load counterpart to `setSaving`. Safe to call from any thread.
+pub fn isSaving(file: *const File) bool {
+    return @atomicLoad(bool, &file.editor.saving, .monotonic);
+}
+
 /// Width × height of the artwork in pixels, taken from the first layer. This matches the in-memory
 /// canvas even if grid metadata were ever inconsistent with `width()` / `height()`.
 pub fn canvasPixelSize(file: *const File) struct { w: u32, h: u32 } {
@@ -2636,7 +2649,7 @@ pub fn saveTar(self: *File, window: *dvui.Window) !void {
     try wrt.finish();
 
     {
-        const id_mutex = dvui.toastAdd(window, @src(), 0, self.editor.canvas.id, fizzy.dvui.toastDisplay, 2_000_000);
+        const id_mutex = dvui.toastAdd(window, @src(), 0, fizzy.dvui.save_toast_subwindow_id, fizzy.dvui.saveCompleteToastDisplay, 2_500_000);
         const id = id_mutex.id;
         const message = std.fmt.allocPrint(window.arena(), "Saved {s}", .{std.fs.path.basename(self.path)}) catch "Saved file";
         dvui.dataSetSlice(window, id, "_message", message);
@@ -2678,46 +2691,46 @@ fn writeFlattenedLayersToPath(self: *File, out_path: []const u8, window: *dvui.W
 }
 
 pub fn savePng(self: *File, window: *dvui.Window) !void {
-    if (self.editor.saving) return;
-    self.editor.saving = true;
-    errdefer self.editor.saving = false;
+    if (self.isSaving()) return;
+    self.setSaving(true);
+    errdefer self.setSaving(false);
 
     try self.writeFlattenedLayersToPath(self.path, window, .png);
 
     {
-        const id_mutex = dvui.toastAdd(window, @src(), self.id, self.editor.canvas.id, fizzy.dvui.toastDisplay, 2_000_000);
+        const id_mutex = dvui.toastAdd(window, @src(), self.id, fizzy.dvui.save_toast_subwindow_id, fizzy.dvui.saveCompleteToastDisplay, 2_500_000);
         const id = id_mutex.id;
         const message = std.fmt.allocPrint(window.arena(), "Saved {s} to disk", .{std.fs.path.basename(self.path)}) catch "Saved file";
         dvui.dataSetSlice(window, id, "_message", message);
         id_mutex.mutex.unlock(dvui.io);
     }
 
-    self.editor.saving = false;
+    self.setSaving(false);
     self.history.bookmark = 0;
 }
 
 pub fn saveJpg(self: *File, window: *dvui.Window) !void {
-    if (self.editor.saving) return;
-    self.editor.saving = true;
-    errdefer self.editor.saving = false;
+    if (self.isSaving()) return;
+    self.setSaving(true);
+    errdefer self.setSaving(false);
 
     try self.writeFlattenedLayersToPath(self.path, window, .jpg);
 
     {
-        const id_mutex = dvui.toastAdd(window, @src(), self.id, self.editor.canvas.id, fizzy.dvui.toastDisplay, 2_000_000);
+        const id_mutex = dvui.toastAdd(window, @src(), self.id, fizzy.dvui.save_toast_subwindow_id, fizzy.dvui.saveCompleteToastDisplay, 2_500_000);
         const id = id_mutex.id;
         const message = std.fmt.allocPrint(window.arena(), "Saved {s} to disk", .{std.fs.path.basename(self.path)}) catch "Saved file";
         dvui.dataSetSlice(window, id, "_message", message);
         id_mutex.mutex.unlock(dvui.io);
     }
 
-    self.editor.saving = false;
+    self.setSaving(false);
     self.history.bookmark = 0;
 }
 
 pub fn saveZip(self: *File, window: *dvui.Window) !void {
-    if (self.editor.saving) return;
-    self.editor.saving = true;
+    if (self.isSaving()) return;
+    self.setSaving(true);
     var ext = try self.external(fizzy.app.allocator);
     defer ext.deinit(fizzy.app.allocator);
     const null_terminated_path = try fizzy.editor.arena.allocator().dupeZ(u8, self.path);
@@ -2750,7 +2763,7 @@ pub fn saveZip(self: *File, window: *dvui.Window) !void {
         zip.zip_close(z);
 
         {
-            const id_mutex = dvui.toastAdd(window, @src(), 0, self.editor.canvas.id, fizzy.dvui.toastDisplay, 2_000_000);
+            const id_mutex = dvui.toastAdd(window, @src(), 0, fizzy.dvui.save_toast_subwindow_id, fizzy.dvui.saveCompleteToastDisplay, 2_500_000);
             const id = id_mutex.id;
             const message = std.fmt.allocPrint(window.arena(), "Saved {s}", .{std.fs.path.basename(self.path)}) catch "Saved file";
             dvui.dataSetSlice(window, id, "_message", message);
@@ -2758,13 +2771,13 @@ pub fn saveZip(self: *File, window: *dvui.Window) !void {
         }
     }
 
-    self.editor.saving = false;
+    self.setSaving(false);
     self.history.bookmark = 0;
 }
 
 /// Point `path` at `new_path`, then `saveZip` (same on-disk work as a normal .pixi save). Restores the previous `path` if saving fails.
 pub fn saveAsFizzy(self: *File, new_path: []const u8, window: *dvui.Window) !void {
-    if (self.editor.saving) return;
+    if (self.isSaving()) return;
     if (std.mem.eql(u8, self.path, new_path)) {
         return saveZip(self, window);
     }
@@ -2861,21 +2874,21 @@ fn reinitEditorSurfaceForFlatDocument(self: *File) !void {
 /// Flattens visible layers (via GPU composite), writes PNG or JPEG to `output_path`, and replaces
 /// the document with a single layer matching the flattened result.
 pub fn saveAsFlattened(self: *File, output_path: []const u8, window: *dvui.Window) !void {
-    if (self.editor.saving) return;
-    self.editor.saving = true;
-    errdefer self.editor.saving = false;
+    if (self.isSaving()) return;
+    self.setSaving(true);
+    errdefer self.setSaving(false);
 
     strokeUndoFreeSnapshot(self);
     const w = self.width();
     const h = self.height();
     if (w == 0 or h == 0) {
-        self.editor.saving = false;
+        self.setSaving(false);
         return error.InvalidImageSize;
     }
 
     try fizzy.render.syncLayerComposite(self);
     const target = self.editor.layer_composite_target orelse {
-        self.editor.saving = false;
+        self.setSaving(false);
         return error.NoLayerComposite;
     };
 
@@ -2889,7 +2902,7 @@ pub fn saveAsFlattened(self: *File, output_path: []const u8, window: *dvui.Windo
     const is_png = std.mem.eql(u8, ext, ".png");
     const is_jpg = std.mem.eql(u8, ext, ".jpg") or std.mem.eql(u8, ext, ".jpeg");
     if (!is_png and !is_jpg) {
-        self.editor.saving = false;
+        self.setSaving(false);
         return error.InvalidExtension;
     }
 
@@ -2937,9 +2950,9 @@ pub fn saveAsFlattened(self: *File, output_path: []const u8, window: *dvui.Windo
     try reinitEditorSurfaceForFlatDocument(self);
     self.editor.layer_composite_dirty = true;
     self.editor.split_composite_dirty = true;
-    self.editor.saving = false;
+    self.setSaving(false);
     {
-        const id_mutex = dvui.toastAdd(window, @src(), self.id, self.editor.canvas.id, fizzy.dvui.toastDisplay, 2_000_000);
+        const id_mutex = dvui.toastAdd(window, @src(), self.id, fizzy.dvui.save_toast_subwindow_id, fizzy.dvui.saveCompleteToastDisplay, 2_500_000);
         const id = id_mutex.id;
         const message = std.fmt.allocPrint(window.arena(), "Saved {s} to disk", .{std.fs.path.basename(self.path)}) catch "Saved file";
         dvui.dataSetSlice(window, id, "_message", message);
