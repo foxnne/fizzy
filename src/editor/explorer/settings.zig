@@ -207,6 +207,56 @@ pub fn draw() !void {
     }
 
     {
+        var box = dvui.groupBox(@src(), "Controls", .{
+            .expand = .horizontal,
+        });
+        defer box.deinit();
+
+        var dropdown: dvui.DropdownWidget = undefined;
+        dropdown.init(@src(), .{ .label = "Control scheme" }, .{
+            .expand = .horizontal,
+            .corner_radius = dvui.Rect.all(1000),
+        });
+        defer dropdown.deinit();
+
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .vertical,
+            .gravity_x = 1.0,
+        });
+
+        const label_text = switch (fizzy.editor.settings.input_scheme) {
+            .mouse => "Mouse",
+            .trackpad => "Trackpad",
+        };
+        dvui.label(@src(), "{s}", .{label_text}, .{ .margin = .all(0), .padding = .all(0) });
+
+        dvui.icon(
+            @src(),
+            "dropdown_triangle",
+            dvui.entypo.triangle_down,
+            .{},
+            .{ .gravity_y = 0.5 },
+        );
+
+        hbox.deinit();
+
+        if (dropdown.dropped()) {
+            if (dropdown.addChoiceLabel("Mouse")) {
+                fizzy.editor.settings.input_scheme = .mouse;
+                fizzy.editor.markSettingsDirty();
+                dvui.refresh(null, @src(), vbox.data().id);
+            }
+            if (dropdown.addChoiceLabel("Trackpad")) {
+                fizzy.editor.settings.input_scheme = .trackpad;
+                fizzy.editor.markSettingsDirty();
+                dvui.refresh(null, @src(), vbox.data().id);
+            }
+        }
+
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 10 } });
+    }
+
+    {
         var box = dvui.groupBox(@src(), "Debugging", .{
             .expand = .horizontal,
         });
