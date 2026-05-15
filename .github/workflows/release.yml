@@ -6,11 +6,16 @@ name: Release
 #
 # Flow:
 #   1. Operator edits VERSION, commits, tags v<VERSION>, pushes the tag.
-#   2. Matrix builds (Linux ×2, Windows ×2, macOS ×2): prefetch with retries,
-#      then package per target. Windows targets build natively on windows-latest
-#      with the runner's system MSVC; build.zig wires a translate-c shim
-#      (src/tools/msvc_translatec_shim) and a SIZE_MAX defineCMacro so aro
-#      doesn't reject MSVC stdint.h's `0xff…ui64` literal.
+#   2. Matrix builds (Linux ×2, Windows ×2 cross-compiled from Linux, macOS ×2):
+#      prefetch with retries, then package per target. Windows targets run on
+#      ubuntu-latest with a `zig build msvcup-setup` pre-step (downloads MSVC +
+#      Windows SDK into .velopack-msvc/, mounted through ciopfs for the
+#      case-insensitive lookups Windows headers/libs assume). Cross-compile
+#      from a non-Windows host avoids: (a) translate-c choking on the
+#      runner's newer system SDK headers (ui64 literals, ARM64 NEON intrinsics
+#      it doesn't auto-include arm_neon.h for); (b) Zig's libcxxabi sub-compile
+#      colliding with MSVC's vcruntime_typeinfo.h. Both are upstream Zig 0.16
+#      gaps; revisit when those land in a future Zig.
 #   3. The assemble job downloads zig-out/<channel>/ from each artifact, runs
 #      FIZZY_RELEASE_SKIP_BUILD=1 ./scripts/release.sh (staging + gh release create).
 #   4. Operator reviews the draft and publishes when ready (auto-update only after publish).
@@ -51,16 +56,19 @@ jobs:
           - channel: arm64-linux
             target: aarch64-linux-gnu
             runner: ubuntu-latest
-          # Windows targets build natively on windows-latest using the runner's
-          # system MSVC. build.zig installs a translate-c shim (src/tools/
-          # msvc_translatec_shim) and predefines SIZE_MAX so aro doesn't choke on
-          # MSVC stdint.h's `0xff…ui64` literal.
+          # Windows targets cross-compile from Linux. windows-latest doesn't work
+          # in Zig 0.16 because of two upstream gaps: translate-c on
+          # aarch64-windows-msvc doesn't auto-include <arm_neon.h>, so MSVC ucrt
+          # wchar.h's NEON SIMD path fails to translate; and Zig's libcxxabi
+          # sub-compile collides with MSVC's vcruntime_typeinfo.h. Cross-compile
+          # avoids system MSVC entirely. ubuntu (cheaper than macOS) needs the
+          # ciopfs case-insensitive overlay below for the MSI extraction.
           - channel: x86-64-windows
             target: x86_64-windows-msvc
-            runner: windows-latest
+            runner: ubuntu-latest
           - channel: arm64-windows
             target: aarch64-windows-msvc
-            runner: windows-latest
+            runner: ubuntu-latest
     defaults:
       run:
         shell: bash
@@ -111,6 +119,29 @@ jobs:
           }
           fetch "" || exit 1
           fetch "-Dtarget=${{ matrix.target }}" || exit 1
+
+      # MSVC SDK has to materialize on disk BEFORE `zig build package` configures,
+      # because applyMsvcIncludesToReachableTranslateC reads zig-libc-*.ini during
+      # build() to add -isystem paths to DVUI's translate-c steps. -Dfetch-msvc only
+      # schedules msvcup as a build-step dependency, which is too late.
+      # MSI extraction on Linux preserves the SDK's mixed-case filenames
+      # (kernel32.Lib, Windows.h, …). Downstream C code mixes cases freely:
+      # gen_zig_libc_msvc.zig wants kernel32.lib, freetype includes <windows.h>,
+      # kernelspecs.h includes "DriverSpecs.h" while disk has driverspecs.h.
+      # Lowercase symlinks alone aren't enough (bidirectional mismatches), so
+      # mount the install dir through ciopfs — a FUSE case-insensitive overlay
+      # used precisely for this Windows-on-Linux scenario. msvcup writes through
+      # the mount, files land lowercase on the backing dir, all case-variant
+      # lookups by Zig / clang / the linker resolve.
+      - name: Setup MSVC SDK (Windows targets)
+        if: endsWith(matrix.target, '-windows-msvc')
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ciopfs
+          mkdir -p .velopack-msvc-real .velopack-msvc
+          ciopfs .velopack-msvc-real .velopack-msvc
+          zig build msvcup-setup
 
       - name: Package (${{ matrix.channel }})
         run: |

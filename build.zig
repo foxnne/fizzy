@@ -889,8 +889,3 @@ fn addImport(
     compile.root_module.addImport(name, module);
 }
 
-fn addCGif(b: *std.Build, compile: *std.Build.Step.Compile) void {
-    compile.addIncludePath(std.Build.path(b, "src/deps/cgif/inc"));
-    compile.addCSourceFile(.{ .file = std.Build.path(b, "src/deps/cgif/cgif.c") });
-    compile.addCSourceFile(.{ .file = std.Build.path(b, "src/deps/cgif/cgif_raw.c") });
-}
