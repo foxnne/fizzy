@@ -324,7 +324,7 @@ pub fn processEvents(self: *CanvasWidget) void {
                         }
                     }
                 } else if (me.action == .wheel_y or me.action == .wheel_x) {
-                    switch (fizzy.editor.settings.input_scheme) {
+                    switch (fizzy.Editor.Settings.resolvedPanZoomScheme(&fizzy.editor.settings)) {
                         .mouse => {
                             const base: f32 = if (me.mod.matchBind("shift")) 1.005 else 1.005;
                             if ((me.mod.matchBind("shift") and me.mod.matchBind("ctrl/cmd")) or !me.mod.matchBind("shift") and !me.mod.matchBind("ctrl/cmd")) {

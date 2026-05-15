@@ -224,7 +224,8 @@ pub fn draw() !void {
             .gravity_x = 1.0,
         });
 
-        const label_text = switch (fizzy.editor.settings.input_scheme) {
+        const label_text: []const u8 = switch (fizzy.editor.settings.input_scheme) {
+            .auto => try std.fmt.allocPrint(dvui.currentWindow().lifo(), "Auto ({s})", .{@tagName(dvui.getMouseTypeHint())}),
             .mouse => "Mouse",
             .trackpad => "Trackpad",
         };
@@ -241,6 +242,11 @@ pub fn draw() !void {
         hbox.deinit();
 
         if (dropdown.dropped()) {
+            if (dropdown.addChoiceLabel("Auto")) {
+                fizzy.editor.settings.input_scheme = .auto;
+                fizzy.editor.markSettingsDirty();
+                dvui.refresh(null, @src(), vbox.data().id);
+            }
             if (dropdown.addChoiceLabel("Mouse")) {
                 fizzy.editor.settings.input_scheme = .mouse;
                 fizzy.editor.markSettingsDirty();

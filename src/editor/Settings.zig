@@ -12,7 +12,13 @@ pub const autosave_timeout_ns: i128 = 500 * 1_000_000;
 
 pub var parsed: ?std.json.Parsed(Settings) = null;
 
-pub const InputScheme = enum { mouse, trackpad };
+pub const InputScheme = enum { auto, mouse, trackpad };
+
+/// Resolved zoom/pan control style after applying `auto` (`dvui.getMouseTypeHint`).
+pub const ResolvedPanZoomScheme = enum {
+    mouse,
+    trackpad,
+};
 pub const FlipbookView = enum { sequential, grid };
 pub const Compatibility = enum { none, ldtk };
 
@@ -36,9 +42,8 @@ min_window_size: [2]f32 = .{ 640, 480 },
 
 initial_window_size: [2]f32 = .{ 1280, 720 },
 
-/// Which control scheme to use for zooming and panning.
-/// TODO: Remove builtin check and offer a setup menu if settings.json doesn't exist.
-input_scheme: InputScheme = if (builtin.os.tag == .macos) .trackpad else .mouse,
+/// Zoom/pan control scheme (`auto` picks mouse vs trackpad gestures from `dvui.getMouseTypeHint` after scroll events).
+input_scheme: InputScheme = .auto,
 
 /// Whether or not to show rulers on each canvas.
 show_rulers: bool = true,
@@ -92,6 +97,18 @@ titlebar_height: f32 = 26.0, // This is the height of the titlebar in pixels
 
 /// Empty strip below the top window edge (non-macOS), above the main title row (in-window menu, etc.).
 titlebar_top_buffer: f32 = 10.0,
+
+pub fn resolvedPanZoomScheme(settings: *const Settings) ResolvedPanZoomScheme {
+    return switch (settings.input_scheme) {
+        .auto => switch (dvui.getMouseTypeHint()) {
+            .unknown => if (builtin.os.tag == .macos) .trackpad else .mouse,
+            .mouse => .mouse,
+            .trackpad => .trackpad,
+        },
+        .mouse => .mouse,
+        .trackpad => .trackpad,
+    };
+}
 
 fn default(allocator: std.mem.Allocator) !Settings {
     return .{

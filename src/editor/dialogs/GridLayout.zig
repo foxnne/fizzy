@@ -4,7 +4,7 @@
 //!
 //! The middle is a horizontal strip: intrinsic-width form column on the left (vertical fill),
 //! preview on the right that expands with the window. The preview uses `CanvasWidget` so
-//! panning / zooming honours the user's `input_scheme` setting.
+//! panning / zooming honour `Settings.resolvedPanZoomScheme` (`auto` follows DVUI scroll heuristics).
 
 const fizzy = @import("../../fizzy.zig");
 const dvui = @import("dvui");
