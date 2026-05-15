@@ -6,11 +6,11 @@ name: Release
 #
 # Flow:
 #   1. Operator edits VERSION, commits, tags v<VERSION>, pushes the tag.
-#   2. Matrix builds (Linux ×2, Windows ×2 cross-compiled from Linux, macOS ×2):
-#      prefetch with retries, then package per target. Windows MSVC targets run on
-#      ubuntu-latest with -Dfetch-msvc (downloads a known-good MSVC SDK into
-#      .velopack-msvc/) — building on windows-latest fails because Zig's translate-c
-#      can't parse the runner's system MSVC headers (ui64 suffixes, NEON intrinsics).
+#   2. Matrix builds (Linux ×2, Windows ×2, macOS ×2): prefetch with retries, then
+#      package per target. Windows targets run on windows-latest but use a separate
+#      `zig build msvcup-setup` pre-step to download a known-good MSVC SDK into
+#      .velopack-msvc/ — using the runner's system MSVC instead trips Zig's
+#      translate-c on ui64 literals and ARM64 NEON intrinsics in the SDK headers.
 #   3. The assemble job downloads zig-out/<channel>/ from each artifact, runs
 #      FIZZY_RELEASE_SKIP_BUILD=1 ./scripts/release.sh (staging + gh release create).
 #   4. Operator reviews the draft and publishes when ready (auto-update only after publish).
@@ -51,18 +51,19 @@ jobs:
           - channel: arm64-linux
             target: aarch64-linux-gnu
             runner: ubuntu-latest
-          # Windows targets cross-compile from Linux with -Dfetch-msvc (downloads
-          # a known-good MSVC SDK into .velopack-msvc/). Building on windows-latest
-          # picks up the runner's system MSVC headers, which Zig 0.16's translate-c
-          # can't parse (e.g. `0xff…ui64` literals in stdint.h, NEON intrinsics in
-          # the ARM64 ucrt wchar.h). The old monolithic release used this same
-          # cross-compile path from macOS-latest.
+          # Windows targets run on windows-latest but use msvcup-fetched MSVC, NOT
+          # the runner's system MSVC. The system MSVC headers on windows-latest
+          # trip Zig 0.16's translate-c (e.g. `0xff…ui64` in stdint.h, NEON
+          # intrinsics in the ARM64 ucrt wchar.h); the SDK velopack-zig downloads
+          # is a known-good version translate-c handles cleanly. Native runner +
+          # downloaded SDK avoids both that issue and the Linux case-sensitivity
+          # bug in velopack-zig's gen_zig_libc_msvc.zig (kernel32.Lib vs .lib).
           - channel: x86-64-windows
             target: x86_64-windows-msvc
-            runner: ubuntu-latest
+            runner: windows-latest
           - channel: arm64-windows
             target: aarch64-windows-msvc
-            runner: ubuntu-latest
+            runner: windows-latest
     defaults:
       run:
         shell: bash
