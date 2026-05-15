@@ -1,15 +1,15 @@
 name: Release
 
-# Triggered when a tag like v0.0.4 is pushed. Six native compile jobs package in
-# parallel (one Velopack channel each), then a final job stages assets and uploads
-# a draft GitHub release via scripts/release.sh.
+# Triggered when a tag like v0.0.4 is pushed. Six parallel package jobs (one Velopack
+# channel each; some runners use Zig cross-compile to the target triple), then a final job
+# stages assets and uploads a draft GitHub release via scripts/release.sh.
 #
 # Flow:
 #   1. Operator edits VERSION, commits, tags v<VERSION>, pushes the tag.
-#   2. Matrix builds (Linux / Windows ×2, macOS ×2) run zig build package for their
-#      target only. Windows runners run zig build msvcup-setup first (same velopack
-#      MSVC INI wiring as macOS-hosted cross-compile). macOS runners use optional
-#      signing secrets (environment fizzy_release).
+#   2. Matrix builds (Linux / Windows ×2, macOS ×2): prefetch with retries, then
+#      package per target. Prefer "latest" hosts + Zig cross-compile (arm64 linux/macos/win
+#      from x86/macOS/Windows equivalents) instead of shrinking legacy runner pools (e.g. macOS-13).
+#      Windows MSVC prep uses scripts/msvcup/setup-msvc.ps1 — not zig build msvcup-setup.
 #   3. The assemble job downloads zig-out/<channel>/ from each artifact, runs
 #      FIZZY_RELEASE_SKIP_BUILD=1 ./scripts/release.sh (staging + gh release create).
 #   4. Operator reviews the draft and publishes when ready (auto-update only after publish).
@@ -19,9 +19,6 @@ name: Release
 #   FIZZY_MACOS_SIGN_APP / FIZZY_MACOS_SIGN_INSTALLER
 #   FIZZY_APPLE_ID / FIZZY_APPLE_APP_PASSWORD / FIZZY_APPLE_TEAM_ID
 #
-# windows-11-arm: public repos get native ARM Windows runners on GitHub-hosted;
-# private repos may need a fallback (larger runners or self-hosted).
-
 on:
   push:
     tags:
@@ -52,13 +49,13 @@ jobs:
             runner: ubuntu-latest
           - channel: arm64-linux
             target: aarch64-linux-gnu
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-latest
           - channel: x86-64-windows
             target: x86_64-windows-msvc
             runner: windows-latest
           - channel: arm64-windows
             target: aarch64-windows-msvc
-            runner: windows-11-arm
+            runner: windows-latest
     defaults:
       run:
         shell: bash
@@ -92,18 +89,8 @@ jobs:
         with:
           dotnet-version: "8.0"
 
-      # MSVC payload + zig libc INIs for *-windows-msvc (matches scripts/release.sh on macOS).
-      - name: msvcup-setup (Windows only)
-        if: runner.os == 'Windows'
-        run: |
-          set -euo pipefail
-          if [[ ! -f .velopack-msvc/zig-libc-x64.ini || ! -f .velopack-msvc/zig-libc-arm64.ini ]]; then
-            echo "==> zig build msvcup-setup"
-            zig build msvcup-setup
-          else
-            echo "==> .velopack-msvc/ already present"
-          fi
-
+      # Prefetch before msvcup/package so lazy deps (e.g. zigwin32 from GitHub) get retry
+      # backoff; zig build msvcup-setup alone can hit HttpConnectionClosing with no retries.
       - name: Fetch deps with retries
         run: |
           fetch() {
@@ -141,10 +128,10 @@ jobs:
         include:
           - channel: x86-64-macos
             target: x86_64-macos
-            runner: macos-13
+            runner: macos-latest
           - channel: arm64-macos
             target: aarch64-macos
-            runner: macos-14
+            runner: macos-latest
 
     env:
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache-${{ github.run_id }}-${{ matrix.channel }}
