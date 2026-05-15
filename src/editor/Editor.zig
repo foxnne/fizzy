@@ -40,6 +40,7 @@ pub const Sidebar = @import("Sidebar.zig");
 pub const Infobar = @import("Infobar.zig");
 pub const Menu = @import("Menu.zig");
 pub const FileLoadJob = @import("FileLoadJob.zig");
+pub const PackJob = @import("PackJob.zig");
 
 /// This arena is for small per-frame editor allocations, such as path joins, null terminations and labels.
 /// Do not free these allocations, instead, this allocator will be .reset(.retain_capacity) each frame
@@ -79,6 +80,13 @@ open_files: std.AutoArrayHashMapUnmanaged(u64, fizzy.Internal.File) = .empty,
 /// and moves completed results into `open_files`. The map owns its key strings via each job's
 /// `path` allocation; the StringHashMap stores key slices that point into job memory.
 loading_jobs: std.StringHashMapUnmanaged(*FileLoadJob) = .empty,
+
+/// Background project-pack jobs. Each `startPackProject` cancels any predecessors and pushes a
+/// new job; only the newest job's result is installed. Cancelled jobs are still kept here
+/// until their worker observes the flag and publishes `done`, at which point
+/// `processPackJob` reaps them. This way rapid Pack-Project clicks (or future per-save
+/// repacks) coalesce: only the most recent request produces a visible atlas update.
+pack_jobs: std.ArrayListUnmanaged(*PackJob) = .empty,
 /// True iff a loading job should set its target file as the active file once it lands.
 /// `setActiveFile`-on-completion respects the most recent open request — multiple in-flight
 /// loads only auto-focus the most recently requested one.
@@ -624,6 +632,7 @@ pub fn tick(editor: *Editor) !dvui.App.Result {
     // Reap completed background file loads. Must run BEFORE `pending_composite_warmup` and any
     // workspace/file iteration so that a just-loaded file is visible to the rest of this frame.
     editor.processLoadingJobs();
+    editor.processPackJob();
 
     if (editor.pending_composite_warmup) {
         editor.pending_composite_warmup = false;
@@ -1743,6 +1752,171 @@ pub fn processLoadingJobs(editor: *Editor) void {
     }
 }
 
+/// Kick off an async project-pack. Walks the project directory once on the main thread to
+/// gather inputs: open files contribute a thread-isolated snapshot (so unsaved edits make it
+/// into the pack); unopened files just contribute their paths and the worker reads them. Once
+/// inputs are gathered the heavy work — pixel reduction, rect packing, atlas blit — runs on a
+/// worker thread.
+///
+/// Rapid re-triggers (e.g. save-all-then-repack, or rapid button clicks) coalesce: any
+/// in-flight jobs are cancelled before the new one spawns. The cancelled workers continue
+/// running long enough to observe the flag and exit cleanly; their results are discarded by
+/// `processPackJob`. Only the most recently-started job's result is installed.
+pub fn startPackProject(editor: *Editor) !void {
+    const root = fizzy.editor.folder orelse return;
+
+    var inputs: std.ArrayListUnmanaged(PackJob.PackInput) = .empty;
+    errdefer {
+        for (inputs.items) |*input| input.deinit(fizzy.app.allocator);
+        inputs.deinit(fizzy.app.allocator);
+    }
+
+    // Recurse the project directory and gather one PackInput per fizzy-extension file. Open
+    // files get snapshotted now so their in-memory (possibly-dirty) state is what we pack.
+    try gatherPackInputs(editor, &inputs, root);
+
+    if (inputs.items.len == 0) return;
+
+    // `owned_inputs` is nulled out once ownership transfers into the job, so the errdefer
+    // below is a no-op on the success path and avoids the double-free of letting both this
+    // and `job.destroy()` reclaim the same allocations.
+    var owned_inputs: ?[]PackJob.PackInput = try inputs.toOwnedSlice(fizzy.app.allocator);
+    errdefer if (owned_inputs) |o| {
+        for (o) |*input| input.deinit(fizzy.app.allocator);
+        fizzy.app.allocator.free(o);
+    };
+
+    // Cancel every predecessor BEFORE appending the new job. This avoids a race where a
+    // predecessor publishes `done` between append and cancel: `processPackJob` walks the list
+    // newest-first and would otherwise see an old non-cancelled ready job and install its
+    // (stale) atlas. Cancelled predecessors are skipped during install selection.
+    for (editor.pack_jobs.items) |old| {
+        old.cancelled.store(true, .monotonic);
+    }
+
+    const job = try PackJob.create(fizzy.app.allocator, owned_inputs.?);
+    owned_inputs = null;
+    errdefer job.destroy();
+
+    try editor.pack_jobs.append(fizzy.app.allocator, job);
+    errdefer _ = editor.pack_jobs.pop();
+
+    const thread = try std.Thread.spawn(.{}, PackJob.workerMain, .{job});
+    thread.detach();
+}
+
+/// True iff there is a non-cancelled pack job in flight. Drives the explorer button's spinner
+/// state without coupling the UI to the internal pack-job list.
+pub fn isPackingActive(editor: *const Editor) bool {
+    for (editor.pack_jobs.items) |job| {
+        if (!job.cancelled.load(.monotonic) and !job.done.load(.acquire)) return true;
+    }
+    return false;
+}
+
+fn gatherPackInputs(
+    editor: *Editor,
+    inputs: *std.ArrayListUnmanaged(PackJob.PackInput),
+    directory: []const u8,
+) !void {
+    const io = dvui.io;
+    var dir = try std.Io.Dir.cwd().openDir(io, directory, .{ .access_sub_paths = true, .iterate = true });
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (entry.kind == .file) {
+            const ext = std.fs.path.extension(entry.name);
+            if (!fizzy.Internal.File.isFizzyExtension(ext)) continue;
+
+            const abs_path = try std.fs.path.joinZ(fizzy.app.allocator, &.{ directory, entry.name });
+            // Determine whether this file is currently open. If so, snapshot it now; the
+            // returned `PackFile` owns its allocations. Otherwise the worker will read it
+            // from disk, so we pass the path along (transferring ownership to the input).
+            if (editor.getFileFromPath(abs_path)) |open_file| {
+                defer fizzy.app.allocator.free(abs_path);
+                const snapshot = try PackJob.PackFile.fromOpenFile(fizzy.app.allocator, open_file);
+                try inputs.append(fizzy.app.allocator, .{ .open = snapshot });
+            } else {
+                // Transfer ownership of the path into the input; the input deinit will free it.
+                // `joinZ` produced a null-terminated slice but we only need the non-sentinel
+                // bytes for `File.fromPath`; copy into a plain `[]u8` so deinit is symmetric.
+                const owned_path = try fizzy.app.allocator.dupe(u8, abs_path);
+                fizzy.app.allocator.free(abs_path);
+                try inputs.append(fizzy.app.allocator, .{ .path = owned_path });
+            }
+        } else if (entry.kind == .directory) {
+            const abs_path = try std.fs.path.join(fizzy.app.allocator, &.{ directory, entry.name });
+            defer fizzy.app.allocator.free(abs_path);
+            try gatherPackInputs(editor, inputs, abs_path);
+        }
+    }
+}
+
+/// Per-frame sweep called from `tick`. Reaps any pack jobs whose worker has published `done`,
+/// installs the result of the newest non-cancelled job (and only that one), and discards the
+/// rest. Older or cancelled jobs' results — even successful ones — are freed without affecting
+/// `fizzy.packer.atlas` so coalesced re-triggers can't briefly flicker stale atlases.
+pub fn processPackJob(editor: *Editor) void {
+    if (editor.pack_jobs.items.len == 0) return;
+
+    // Identify the newest (last appended) job that finished with a `.ready` result and was
+    // not cancelled. Only its result is installed; older successful results are stale and
+    // get discarded along with cancelled / failed ones.
+    var install_index: ?usize = null;
+    {
+        var i = editor.pack_jobs.items.len;
+        while (i > 0) {
+            i -= 1;
+            const job = editor.pack_jobs.items[i];
+            if (!job.done.load(.acquire)) continue;
+            if (job.cancelled.load(.monotonic)) continue;
+            if (job.currentPhase() == .ready and job.result_atlas != null) {
+                install_index = i;
+                break;
+            }
+        }
+    }
+
+    if (install_index) |idx| {
+        const job = editor.pack_jobs.items[idx];
+        const new_atlas = job.result_atlas.?;
+        // Free the previously-installed atlas's allocations so the new one can take its
+        // place — matches the synchronous `packAndClear` cleanup ordering.
+        if (fizzy.packer.atlas) |*current_atlas| {
+            for (current_atlas.data.animations) |*anim| fizzy.app.allocator.free(anim.name);
+            fizzy.app.allocator.free(current_atlas.data.sprites);
+            fizzy.app.allocator.free(current_atlas.data.animations);
+            fizzy.app.allocator.free(fizzy.image.bytes(current_atlas.source));
+
+            current_atlas.source = new_atlas.source;
+            current_atlas.data = new_atlas.data;
+        } else {
+            fizzy.packer.atlas = new_atlas;
+        }
+        job.result_consumed = true;
+    }
+
+    // Reap everything that has published `done`. Successful-but-superseded jobs leave their
+    // `result_atlas` un-consumed; `destroy()` frees those allocations for us.
+    var write: usize = 0;
+    for (editor.pack_jobs.items) |job| {
+        if (!job.done.load(.acquire)) {
+            editor.pack_jobs.items[write] = job;
+            write += 1;
+            continue;
+        }
+        const phase = job.currentPhase();
+        switch (phase) {
+            .ready, .cancelled => {},
+            .failed => dvui.log.err("Pack project failed: {any}", .{job.err}),
+            else => dvui.log.err("Pack job finished in unexpected phase {s}", .{@tagName(phase)}),
+        }
+        job.destroy();
+    }
+    editor.pack_jobs.shrinkRetainingCapacity(write);
+}
+
 /// Returns the active workspace's canvas content rect (physical pixels) captured from the
 /// previous frame's draw, if available. Falls back to `null` before the first workspace draw.
 /// Used by `drawLoadingOverlay` / `drawSaveToasts` to center their cards over the canvas area
@@ -2624,6 +2798,13 @@ pub fn deinit(editor: *Editor) !void {
         }
         editor.loading_jobs.deinit(fizzy.app.allocator);
     }
+
+    for (editor.pack_jobs.items) |job| {
+        // Detached workers still reference each job. Signal cancellation and leak the structs
+        // on hard quit — better than a use-after-free if a worker hasn't yet observed it.
+        job.cancelled.store(true, .monotonic);
+    }
+    editor.pack_jobs.deinit(fizzy.app.allocator);
 
     if (editor.tab_drag_from_tree_path) |p| {
         fizzy.app.allocator.free(p);

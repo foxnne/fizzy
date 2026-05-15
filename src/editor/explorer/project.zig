@@ -6,16 +6,10 @@ const dvui = @import("dvui");
 
 pub fn draw() !void {
     if (fizzy.editor.folder) |folder| {
-        if (dvui.button(@src(), "Pack Project", .{ .draw_focus = false }, .{
-            .expand = .horizontal,
-            .style = .highlight,
-        })) {
-            fizzy.packer.appendProject() catch {
-                dvui.log.err("Failed to append project", .{});
-            };
-
-            fizzy.packer.packAndClear() catch {
-                dvui.log.err("Failed to pack project", .{});
+        const packing = fizzy.editor.isPackingActive();
+        if (packProjectButton(packing)) {
+            fizzy.editor.startPackProject() catch |err| {
+                dvui.log.err("Failed to start project pack: {any}", .{err});
             };
         }
 
@@ -337,6 +331,45 @@ fn pathTextEntry(path_type: PathType) !void {
             }
         }
     }
+}
+
+/// "Pack Project" button. Same look-and-feel as `dvui.button`, but with a bubble spinner
+/// pinned to the right edge while a pack is in flight. Always interactive — rapid clicks /
+/// per-save repack triggers coalesce via `Editor.startPackProject` cancelling predecessors.
+fn packProjectButton(packing: bool) bool {
+    var bw: dvui.ButtonWidget = undefined;
+    bw.init(@src(), .{ .draw_focus = false }, .{
+        .expand = .horizontal,
+        .style = .highlight,
+    });
+    defer bw.deinit();
+
+    bw.processEvents();
+    bw.drawBackground();
+    const clicked = bw.clicked();
+
+    // Center label across the full button rect via gravity. Mirrors `dvui.button`'s call
+    // signature so the text picks up the same hovered/pressed colors.
+    const label_text: []const u8 = if (packing) "Packing…" else "Pack Project";
+    const content_opts = (dvui.Options{}).strip().override(bw.style()).override(.{
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+    });
+    dvui.labelNoFmt(@src(), label_text, .{ .align_x = 0.5, .align_y = 0.5 }, content_opts);
+
+    // Spinner overlays at the right edge — same content rect as the label, but anchored to
+    // `gravity_x = 1.0`. Sized to roughly match the cap height so it doesn't fight the label.
+    if (packing) {
+        fizzy.dvui.bubbleSpinner(@src(), (dvui.Options{}).strip().override(bw.style()).override(.{
+            .min_size_content = .{ .w = 16, .h = 16 },
+            .gravity_x = 1.0,
+            .gravity_y = 0.5,
+            .padding = .{ .w = 4 },
+        }));
+    }
+
+    bw.drawFocus();
+    return clicked;
 }
 
 pub fn packedAtlasOutputCallback(paths: ?[][:0]const u8) void {
