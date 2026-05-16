@@ -100,7 +100,7 @@ titlebar_top_buffer: f32 = 10.0,
 
 pub fn resolvedPanZoomScheme(settings: *const Settings) ResolvedPanZoomScheme {
     return switch (settings.input_scheme) {
-        .auto => switch (dvui.getMouseTypeHint()) {
+        .auto => switch (dvui.mouseType()) {
             .unknown => if (builtin.os.tag == .macos) .trackpad else .mouse,
             .mouse => .mouse,
             .trackpad => .trackpad,

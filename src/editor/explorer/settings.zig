@@ -225,7 +225,7 @@ pub fn draw() !void {
         });
 
         const label_text: []const u8 = switch (fizzy.editor.settings.input_scheme) {
-            .auto => switch (dvui.getMouseTypeHint()) {
+            .auto => switch (dvui.mouseType()) {
                 // Pre-classification (no scroll events seen yet) — drop the parenthetical
                 // entirely rather than showing "Auto (unknown)".
                 .unknown => "Auto",

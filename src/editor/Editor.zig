@@ -12,8 +12,8 @@ const cozette_bold_ttf = assets.files.fonts.@"CozetteVectorBold.ttf";
 const comfortaa_ttf = assets.files.fonts.@"Comfortaa-Regular.ttf";
 const comfortaa_bold_ttf = assets.files.fonts.@"Comfortaa-Bold.ttf";
 
-const noto_sans_ttf = assets.files.fonts.@"NotoSans-Light.ttf";
-const noto_sans_bold_ttf = assets.files.fonts.@"NotoSans-Bold.ttf";
+const plus_jakarta_sans_ttf = assets.files.fonts.@"PlusJakartaSans-Regular.ttf";
+const plus_jakarta_sans_bold_ttf = assets.files.fonts.@"PlusJakartaSans-Bold.ttf";
 
 const fizzy = @import("../fizzy.zig");
 const dvui = @import("dvui");
@@ -165,14 +165,13 @@ const embedded_fonts: []const dvui.Font.Source = &.{
         .bytes = comfortaa_bold_ttf,
         .weight = .bold,
     },
-
     .{
-        .family = dvui.Font.array("NotoSans"),
-        .bytes = noto_sans_ttf,
+        .family = dvui.Font.array("PlusJakartaSans"),
+        .bytes = plus_jakarta_sans_ttf,
     },
     .{
-        .family = dvui.Font.array("NotoSans"),
-        .bytes = noto_sans_bold_ttf,
+        .family = dvui.Font.array("PlusJakartaSans"),
+        .bytes = plus_jakarta_sans_bold_ttf,
         .weight = .bold,
     },
 };
@@ -264,9 +263,9 @@ pub fn init(
 
         fizzy_dark.dark = true;
         fizzy_dark.name = "Fizzy Dark";
-        fizzy_dark.font_body = .find(.{ .family = "Comfortaa", .size = editor.settings.font_body_size, .weight = .bold });
-        fizzy_dark.font_title = .find(.{ .family = "NotoSans", .size = editor.settings.font_title_size, .weight = .bold });
-        fizzy_dark.font_heading = .find(.{ .family = "NotoSans", .size = editor.settings.font_heading_size, .weight = .bold });
+        fizzy_dark.font_body = .find(.{ .family = "Comfortaa", .size = editor.settings.font_body_size });
+        fizzy_dark.font_title = .find(.{ .family = "Comfortaa", .size = editor.settings.font_title_size, .weight = .bold });
+        fizzy_dark.font_heading = .find(.{ .family = "PlusJakartaSans", .size = editor.settings.font_heading_size, .weight = .bold });
         fizzy_dark.font_mono = .find(.{ .family = "CozetteVector", .size = editor.settings.font_mono_size });
 
         var moi: dvui.Theme = fizzy_dark;
@@ -493,6 +492,32 @@ pub fn applySettingsTheme(editor: *Editor) !void {
     }
     dvui.themeSet(t.*);
     editor.applyFontSizesFromSettings();
+
+    // TEMP diagnostic: dump every Source registered in the font database, plus
+    // the active theme's heading/title font specs. Helps confirm whether the
+    // Comfortaa-Bold entry actually made it in and what weight font_heading asks for.
+    {
+        const cw = dvui.currentWindow();
+        dvui.log.info("[font-debug] active theme: {s}", .{cw.theme.name});
+        dvui.log.info("[font-debug]   font_heading: family={s} weight={s} size={d}", .{
+            cw.theme.font_heading.familyName(),
+            @tagName(cw.theme.font_heading.weight),
+            cw.theme.font_heading.size,
+        });
+        dvui.log.info("[font-debug]   font_title:   family={s} weight={s} size={d}", .{
+            cw.theme.font_title.familyName(),
+            @tagName(cw.theme.font_title.weight),
+            cw.theme.font_title.size,
+        });
+        for (cw.fonts.database.items, 0..) |src, i| {
+            dvui.log.info("[font-debug]   db[{d}]: family={s} weight={s} bytes.ptr={x}", .{
+                i,
+                src.familyName(),
+                @tagName(src.weight),
+                @intFromPtr(src.bytes.ptr),
+            });
+        }
+    }
 }
 
 pub fn currentGroupingID(editor: *Editor) u64 {
