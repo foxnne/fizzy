@@ -832,6 +832,12 @@ fn addFizzyExecutableForTarget(
     exe.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     exe.root_module.addImport("backend", dvui_dep.module("sdl3"));
 
+    const singleton_app_dep = b.dependency("dvui_singleton_app", .{
+        .target = resolved_target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("singleton_app", singleton_app_dep.module("singleton_app"));
+
     if (b.lazyDependency("icons", .{ .target = resolved_target, .optimize = optimize })) |dep| {
         exe.root_module.addImport("icons", dep.module("icons"));
     }

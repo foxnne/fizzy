@@ -4,6 +4,7 @@
         "build.zig",
         "build.zig.zon",
         "assets",
+        "libs",
     },
     .fingerprint = 0x3311781b569a8e73,
     .name = .fizzy,
@@ -42,6 +43,9 @@
             .url = "https://github.com/graphl-tech/velopack-zig/archive/2ca1ecccd0a3286620c30eaec29cbc1bba981a31.tar.gz",
             .hash = "velopack_zig-0.0.1-LzeGccHTAAAYj2eidbi80qHljonogPnwU-uHCMYBa1ag",
             //.path = "../velopack-zig",
+        },
+        .dvui_singleton_app = .{
+            .path = "libs/dvui-singleton-app",
         },
     },
 }

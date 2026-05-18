@@ -10,6 +10,7 @@ const icon = assets.files.@"icon.png";
 const fizzy = @import("fizzy.zig");
 const auto_update = @import("auto_update.zig");
 const update_notify = @import("update_notify.zig");
+const singleton = @import("singleton.zig");
 
 const App = @This();
 const Editor = fizzy.Editor;
@@ -26,6 +27,10 @@ should_close: bool = false,
 window: *dvui.Window = undefined,
 
 var gpa: std.heap.DebugAllocator(.{}) = .init;
+
+// Stashed in `main` so `AppInit` (which runs later via dvui's initFn) can
+// reach argv through this zig's `process.Init` API.
+var main_init_global: ?std.process.Init = null;
 
 // To be a dvui App:
 // * declare "dvui_app"
@@ -60,6 +65,8 @@ pub fn main(main_init: std.process.Init) !u8 {
         auto_update.appRunHook();
     }
 
+    main_init_global = main_init;
+
     if (@hasDecl(dvui.backend, "main")) {
         return dvui.App.main(main_init);
     }
@@ -75,6 +82,15 @@ pub const std_options: std.Options = .{
 // Runs before the first frame, after backend and dvui.Window.init()
 pub fn AppInit(win: *dvui.Window) !void {
     const allocator = gpa.allocator();
+
+    // Acquire the single-instance lock before chdir or any fizzy globals are
+    // created. If another fizzy is already running, our argv is forwarded
+    // and we exit(0). Paths are resolved to absolute up-front so the
+    // primary's working directory doesn't matter.
+    const resolved_argv = try singleton.collectAndResolveArgv(allocator, main_init_global);
+    defer singleton.freeResolvedArgv(allocator, resolved_argv);
+
+    try singleton.acquireLock(allocator, resolved_argv);
 
     // Run from the directory where the executable is located so relative assets can be found.
     var buffer: [1024]u8 = undefined;
@@ -102,6 +118,15 @@ pub fn AppInit(win: *dvui.Window) !void {
     fizzy.packer = try allocator.create(Packer);
     fizzy.packer.* = Packer.init(allocator) catch unreachable;
 
+    // Hand the window to the listener thread and queue our own argv so the
+    // first frame opens any files / project folder supplied on the command line.
+    singleton.registerWindow(win, resolved_argv);
+
+    // Install the SDL drop-file event watch and drain any drop events that
+    // SDL already queued (macOS routes "Open With" through Apple Events
+    // before our AppInit runs).
+    fizzy.backend.installFileOpenEventHandling(win);
+
     // Override DVUI's default SDL metadata ("DVUI App Example") so the macOS
     // app menu reads "About fizzy" / "Hide fizzy" / "Quit fizzy" and process
     // listings show the real product name + version. `build_opts.app_version`
@@ -117,9 +142,13 @@ pub fn AppInit(win: *dvui.Window) !void {
 // Run as app is shutting down before dvui.Window.deinit()
 pub fn AppDeinit() void {
     fizzy.editor.deinit() catch unreachable;
+    // Tear down the singleton listener after the editor so any callback
+    // currently in flight finishes before we free state it touches.
+    singleton.deinit();
 }
 
 // Run each frame to do normal UI
 pub fn AppFrame() !dvui.App.Result {
+    singleton.drainPending();
     return try fizzy.editor.tick();
 }

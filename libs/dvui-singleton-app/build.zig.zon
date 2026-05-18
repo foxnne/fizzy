@@ -1,0 +1,12 @@
+.{
+    .name = .dvui_singleton_app,
+    .fingerprint = 0x6bd2e4b150d8cb93,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.1",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "examples",
+    },
+}

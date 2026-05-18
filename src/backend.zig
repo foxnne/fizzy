@@ -6,6 +6,7 @@ const dvui = @import("dvui");
 const sdl3 = @import("backend").c;
 const objc = @import("objc");
 const win32 = @import("win32");
+const singleton = @import("singleton.zig");
 
 // AppKit geometry types for NSView frame/bounds (same layout as Foundation).
 const NSPoint = extern struct { x: f64, y: f64 };
@@ -1087,4 +1088,55 @@ fn GenericDialogCallback(cb: ?*anyopaque, files: [*c]const [*c]const u8, mode: e
     }
 
     callback(zig_files);
+}
+
+// ----------------------------------------------------------------------------
+// File-open-from-OS routing.
+//
+// On macOS, double-clicking a registered document type in Finder fires an
+// `openFiles:` Apple Event rather than spawning a new process — so our
+// singleton's argv-forwarding path never sees it. SDL3 translates the event
+// into `SDL_EVENT_DROP_FILE` on the running app. We install an event watch
+// that queues the path into the singleton's pending list so `drainPending`
+// opens it on the next frame.
+// ----------------------------------------------------------------------------
+
+// SDL window pointer captured at install time so the event-watch callback
+// (which fires outside any dvui frame) can raise the window without
+// touching `dvui.currentWindow()` (TLS-only, frame-only).
+var captured_sdl_window: ?*sdl3.SDL_Window = null;
+
+fn handleSdlFileEvent(event: ?*sdl3.SDL_Event) void {
+    const e = event orelse return;
+    if (e.type != sdl3.SDL_EVENT_DROP_FILE) return;
+    const data_ptr = e.drop.data orelse return;
+    const path = std.mem.span(data_ptr);
+    singleton.queuePath(path);
+    // Best-effort: raise the previously-captured SDL window.
+    if (captured_sdl_window) |w| _ = sdl3.SDL_RaiseWindow(w);
+}
+
+fn sdlFileOpenEventWatch(_: ?*anyopaque, event: ?*sdl3.SDL_Event) callconv(.c) bool {
+    handleSdlFileEvent(event);
+    // SDL_AddEventWatch ignores the return value; keep the event in queue.
+    return true;
+}
+
+fn sdlFileOpenDrainFilter(_: ?*anyopaque, event: ?*sdl3.SDL_Event) callconv(.c) bool {
+    handleSdlFileEvent(event);
+    // Keep the event in the queue (dvui's backend will harmlessly ignore it).
+    return true;
+}
+
+/// Register an SDL event watch so that file-open events from the OS get
+/// queued into the singleton's pending list. Also drains any DROP_FILE
+/// events that were queued before the watch was installed (cold-launch
+/// via macOS "Open With" can queue the event during SDL init, before
+/// `AppInit` runs). Caller must pass the dvui window (we capture its SDL
+/// handle so the callback can raise the window without touching dvui TLS
+/// state that is only valid mid-frame).
+pub fn installFileOpenEventHandling(win: *dvui.Window) void {
+    captured_sdl_window = win.backend.impl.window;
+    _ = sdl3.SDL_AddEventWatch(sdlFileOpenEventWatch, null);
+    sdl3.SDL_FilterEvents(sdlFileOpenDrainFilter, null);
 }
